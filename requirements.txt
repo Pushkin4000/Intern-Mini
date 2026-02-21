@@ -6,3 +6,4 @@ langgraph
 pip
 pydantic
 python-dotenv
+langsmith
