@@ -76,6 +76,6 @@ graph.add_conditional_edges(
 graph.set_entry_point("planner")
 agent = graph.compile()
 if __name__ == "__main__":
-    result = agent.invoke({"user_prompt": " "},#Add your request here.
+    result = agent.invoke({"user_prompt": " create a animal donation website. "},#Add your request here.
                           {"recursion_limit": 100})
     print("Final State:", result)
