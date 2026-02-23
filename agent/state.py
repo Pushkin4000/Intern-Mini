@@ -1,4 +1,6 @@
 from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional
+
 
 class File(BaseModel):
     Path: str = Field(description="The path to the file to be created or modified.")
@@ -18,3 +20,8 @@ class impletation(BaseModel):
 class Taskplan(BaseModel):
     implementation_steps:list[impletation]=Field(description="A list of steps to be taken in a file.")
     model_config=ConfigDict(extra="allow")
+
+class CoderState(BaseModel):
+    task_plan: Taskplan = Field(description="The plan for the task to be implemented")
+    current_step_idx: int = Field(0, description="The index of the current step in the implementation steps")
+    current_file_content: Optional[str] = Field(None, description="The content of the file currently being edited or created")
