@@ -188,6 +188,73 @@ class StreamEndpointTests(unittest.TestCase):
         self.assertEqual(events[-1]["data"]["state"], "error")
         self.assertEqual(events[-1]["data"]["severity"], "error")
         self.assertEqual(events[-1]["data"]["message"], "Workflow failed during streaming.")
+        self.assertEqual(events[-1]["data"]["details"]["primary_error"], "boom")
+
+    def test_stream_includes_workspace_id_on_lifecycle_events(self) -> None:
+        async def fake_astream(*_args, **_kwargs):
+            if False:
+                yield None
+
+        with patch("agent.api.build_chat_model", return_value=object()), patch(
+            "agent.api.astream_workflow",
+            new=fake_astream,
+        ):
+            response = self.client.post(
+                "/stream",
+                json={**self.payload, "workspace_id": "test_session_1"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        events = _parse_sse_events(response.text)
+        self.assertEqual(events[0]["event"], "run_started")
+        self.assertEqual(events[-1]["event"], "run_complete")
+        self.assertEqual(events[0]["data"]["workspace_id"], "test_session_1")
+        self.assertEqual(events[-1]["data"]["workspace_id"], "test_session_1")
+
+    def test_stream_reactivates_node_across_iterations(self) -> None:
+        async def fake_astream(*_args, **_kwargs):
+            yield ("debug", {"type": "task", "payload": {"name": "coder"}})
+            yield ("updates", {"coder": {"status": "IN_PROGRESS"}})
+            yield ("debug", {"type": "task", "payload": {"name": "coder"}})
+            yield ("updates", {"coder": {"status": "DONE"}})
+
+        with patch("agent.api.build_chat_model", return_value=object()), patch(
+            "agent.api.astream_workflow",
+            new=fake_astream,
+        ):
+            response = self.client.post("/stream", json=self.payload)
+
+        self.assertEqual(response.status_code, 200)
+        events = _parse_sse_events(response.text)
+        node_start_events = [
+            event for event in events if event["event"] == "on_node_start" and event["data"]["node"] == "coder"
+        ]
+        node_end_events = [
+            event for event in events if event["event"] == "on_node_end" and event["data"]["node"] == "coder"
+        ]
+
+        self.assertEqual(len(node_start_events), 2)
+        self.assertEqual(node_start_events[0]["data"]["iteration"], 1)
+        self.assertEqual(node_start_events[1]["data"]["iteration"], 2)
+        self.assertEqual(len(node_end_events), 2)
+
+    def test_stream_classifies_connection_failure(self) -> None:
+        async def fake_astream(*_args, **_kwargs):
+            raise RuntimeError("connection refused by upstream")
+            if False:
+                yield None
+
+        with patch("agent.api.build_chat_model", return_value=object()), patch(
+            "agent.api.astream_workflow",
+            new=fake_astream,
+        ):
+            response = self.client.post("/stream", json=self.payload)
+
+        self.assertEqual(response.status_code, 200)
+        events = _parse_sse_events(response.text)
+        error_payload = events[-1]["data"]
+        self.assertEqual(error_payload["error_type"], "connection_error")
+        self.assertTrue(isinstance(error_payload.get("hint"), str))
 
     def test_event_id_is_monotonic(self) -> None:
         async def fake_astream(*_args, **_kwargs):

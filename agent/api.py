@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -56,6 +57,7 @@ class RunWorkflowRequest(BaseModel):
     api_key: str | None = Field(default=None, min_length=1)
     mutable_prompt: str | None = None
     prompt_overrides: dict[str, str] | None = None
+    workspace_id: str | None = None
     model: str | None = None
     recursion_limit: int = Field(default=100, ge=1, le=1000)
 
@@ -63,21 +65,28 @@ class RunWorkflowRequest(BaseModel):
 class RunWorkflowResponse(BaseModel):
     status: str = "DONE"
     provider: str = PROVIDER_NAME
+    workspace_id: str | None = None
     plan: Plan | None = None
     task_plan: TaskPlan | None = None
 
 
 class WorkspaceTreeResponse(BaseModel):
     root: str
+    workspace_id: str
+    expires_at: str
     nodes: list[dict[str, object]]
 
 
 class WorkspaceFilesResponse(BaseModel):
+    workspace_id: str
+    expires_at: str
     files: dict[str, str]
     skipped_binary: list[str]
 
 
 class WorkspaceFileResponse(BaseModel):
+    workspace_id: str
+    expires_at: str
     path: str
     content: str
 
@@ -85,16 +94,24 @@ class WorkspaceFileResponse(BaseModel):
 class WorkspaceFileWriteRequest(BaseModel):
     path: str = Field(..., min_length=1)
     content: str
+    workspace_id: str | None = None
 
 
 class WorkspaceFolderCreateRequest(BaseModel):
     path: str = Field(..., min_length=1)
+    workspace_id: str | None = None
 
 
 class WorkspaceRenameRequest(BaseModel):
     from_path: str = Field(..., min_length=1)
     to_path: str = Field(..., min_length=1)
     overwrite: bool = False
+    workspace_id: str | None = None
+
+
+class WorkspaceSessionResponse(BaseModel):
+    workspace_id: str
+    expires_at: str
 
 
 NODE_IDS = ("planner", "architect", "coder")
@@ -207,9 +224,161 @@ def _extract_node_name(payload: object, depth: int = 0) -> str | None:
     return None
 
 
+class StreamRuntimeState:
+    def __init__(self) -> None:
+        self.node_iterations: dict[str, int] = {node_id: 0 for node_id in NODE_IDS}
+        self.node_task_started: dict[str, float] = {}
+        self.node_task_id: dict[str, str] = {}
+        self.token_count = 0
+        self.current_active_node: str | None = None
+
+    def ensure_node(self, node_id: str) -> None:
+        if node_id not in self.node_iterations:
+            self.node_iterations[node_id] = 0
+
+
+def _extract_debug_metadata(data: object) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {
+            "debug_type": None,
+            "step": None,
+            "timestamp": None,
+            "node": _extract_node_name(data),
+            "task_id": None,
+            "triggers": None,
+            "error": None,
+            "result": None,
+            "interrupts": None,
+            "payload": None,
+        }
+
+    payload = data.get("payload")
+    payload_obj = payload if isinstance(payload, dict) else {}
+    return {
+        "debug_type": data.get("type"),
+        "step": data.get("step"),
+        "timestamp": data.get("timestamp"),
+        "node": payload_obj.get("name")
+        or payload_obj.get("node")
+        or _extract_node_name(data),
+        "task_id": payload_obj.get("id"),
+        "triggers": payload_obj.get("triggers"),
+        "error": payload_obj.get("error"),
+        "result": payload_obj.get("result"),
+        "interrupts": payload_obj.get("interrupts"),
+        "payload": payload,
+    }
+
+
+def _summarize_update(node: str, update: object) -> dict[str, Any]:
+    if not isinstance(update, dict):
+        return {
+            "node": node,
+            "kind": type(update).__name__,
+            "text": f"received {type(update).__name__} update payload",
+        }
+
+    summary: dict[str, Any] = {
+        "node": node,
+        "kind": "dict",
+        "keys": sorted(str(key) for key in update.keys()),
+    }
+
+    current_step_idx = update.get("current_step_idx")
+    if isinstance(current_step_idx, int):
+        summary["current_step_idx"] = current_step_idx
+
+    status = update.get("status")
+    if isinstance(status, str):
+        summary["status"] = status
+
+    if isinstance(update.get("coder_state"), dict):
+        coder_state = update["coder_state"]
+        step_index = coder_state.get("current_step_idx")
+        task_plan = coder_state.get("task_plan") if isinstance(coder_state.get("task_plan"), dict) else {}
+        total_steps = task_plan.get("implementation_steps")
+        if isinstance(step_index, int):
+            summary["current_step_idx"] = step_index
+        if isinstance(total_steps, list):
+            summary["total_steps"] = len(total_steps)
+
+    if isinstance(update.get("implementation_steps"), list):
+        summary["total_steps"] = len(update["implementation_steps"])
+
+    if isinstance(update.get("file_path"), str):
+        summary["file_path"] = update["file_path"]
+
+    if "status" in summary:
+        text = f"status={summary['status']}"
+    elif "current_step_idx" in summary and "total_steps" in summary:
+        text = f"step {summary['current_step_idx'] + 1}/{summary['total_steps']}"
+    elif "current_step_idx" in summary:
+        text = f"step index now {summary['current_step_idx']}"
+    elif "keys" in summary:
+        text = f"keys: {', '.join(summary['keys'][:4])}"
+    else:
+        text = "update payload processed"
+
+    summary["text"] = text
+    return summary
+
+
+def _exception_chain(exc: BaseException, max_depth: int = 5) -> list[str]:
+    chain: list[str] = []
+    current: BaseException | None = exc
+    depth = 0
+    while current is not None and depth < max_depth:
+        message = str(current).strip() or current.__class__.__name__
+        chain.append(message)
+        current = current.__cause__ or current.__context__
+        depth += 1
+    return chain
+
+
+def _classify_exception(exc: BaseException) -> dict[str, str]:
+    chain = _exception_chain(exc)
+    merged = " ".join(chain).lower()
+
+    if "rate limit" in merged or "429" in merged:
+        return {
+            "error_type": "rate_limit",
+            "severity": "error",
+            "hint": "Provider rate limit hit. Retry later or reduce prompt/output size.",
+        }
+    if any(term in merged for term in ("api key", "authentication", "unauthorized", "403", "401")):
+        return {
+            "error_type": "auth_error",
+            "severity": "error",
+            "hint": "Authentication failed. Check your X-API-KEY / api_key value.",
+        }
+    if any(term in merged for term in ("connection refused", "connection error", "connecterror", "timeout")):
+        return {
+            "error_type": "connection_error",
+            "severity": "error",
+            "hint": "Network connection to provider failed. Verify proxy/network settings and try again.",
+        }
+    if any(term in merged for term in ("context length", "max tokens", "too many tokens")):
+        return {
+            "error_type": "context_limit",
+            "severity": "error",
+            "hint": "Prompt or context is too large. Reduce prompt size or mutable overrides.",
+        }
+    if any(term in merged for term in ("validation", "invalid", "schema")):
+        return {
+            "error_type": "invalid_request",
+            "severity": "error",
+            "hint": "Request or model output validation failed. Check prompt constraints and retry.",
+        }
+    return {
+        "error_type": "unknown_error",
+        "severity": "error",
+        "hint": "Unexpected workflow error. Inspect raw payload details for diagnosis.",
+    }
+
+
 def _normalize_langgraph_stream_item(
     item: object,
-    started_nodes: set[str],
+    runtime: StreamRuntimeState,
 ) -> list[tuple[str, dict[str, Any]]]:
     namespace, mode, data = _parse_langgraph_stream_item(item)
     raw = {"namespace": namespace, "mode": mode, "data": data}
@@ -226,6 +395,7 @@ def _normalize_langgraph_stream_item(
                     "severity": "warn",
                     "kind": "parse_error",
                     "message": "Unknown stream item shape.",
+                    "details": {"item_type": type(item).__name__},
                     "namespace": None,
                     "raw": item,
                 },
@@ -237,18 +407,28 @@ def _normalize_langgraph_stream_item(
         metadata = None
         if isinstance(data, tuple) and len(data) == 2:
             chunk, metadata = data
+        runtime.token_count += 1
+        active_node = runtime.current_active_node
         return [
             (
                 "on_chat_model_stream",
                 {
-                    "node": None,
+                    "node": active_node,
                     "state": None,
-                    "activity_score": 0.0,
-                    "phase": "llm",
+                    "activity_score": 0.9 if active_node else 0.0,
+                    "phase": NODE_PHASES.get(active_node, "llm") if active_node else "llm",
                     "severity": "debug",
-                    "message": "Streaming model output token.",
+                    "message": (
+                        f"Streaming model output token for '{active_node}'."
+                        if active_node
+                        else "Streaming model output token."
+                    ),
                     "token": _extract_token_text(chunk),
                     "metadata": metadata,
+                    "details": {
+                        "token_index": runtime.token_count,
+                        "token_length": len(_extract_token_text(chunk)),
+                    },
                     "namespace": namespace,
                     "raw": raw,
                 },
@@ -268,34 +448,79 @@ def _normalize_langgraph_stream_item(
                         "severity": "warn",
                         "kind": "parse_error",
                         "message": "`updates` mode payload was not a dict.",
+                        "details": {"received_type": type(data).__name__},
                         "namespace": namespace,
                         "raw": raw,
                     },
                 )
             ]
-        return [
-            (
-                "on_node_end",
-                {
-                    "node": str(node_name),
-                    "state": "completed",
-                    "activity_score": 0.2,
-                    "phase": NODE_PHASES.get(str(node_name), "runtime"),
-                    "severity": "info",
-                    "message": f"Node '{node_name}' completed with update payload.",
-                    "update": update,
-                    "namespace": namespace,
-                    "raw": raw,
-                },
+        update_events: list[tuple[str, dict[str, Any]]] = []
+        for node_name, update in data.items():
+            node = str(node_name)
+            runtime.ensure_node(node)
+            summary = _summarize_update(node, update)
+            iteration = runtime.node_iterations.get(node) or None
+            started_at = runtime.node_task_started.pop(node, None)
+            duration_ms = int((perf_counter() - started_at) * 1000) if started_at else None
+            runtime.node_task_id.pop(node, None)
+            if runtime.current_active_node == node:
+                runtime.current_active_node = None
+
+            iteration_label = f" iteration {iteration}" if isinstance(iteration, int) else ""
+            update_events.append(
+                (
+                    "on_node_end",
+                    {
+                        "node": node,
+                        "state": "completed",
+                        "activity_score": 0.2,
+                        "phase": NODE_PHASES.get(node, "runtime"),
+                        "severity": "info",
+                        "message": (
+                            f"Node '{node}'{iteration_label} completed with update payload: {summary['text']}."
+                        ),
+                        "details": summary,
+                        "update": update,
+                        "iteration": iteration,
+                        "duration_ms": duration_ms,
+                        "namespace": namespace,
+                        "raw": raw,
+                    },
+                )
             )
-            for node_name, update in data.items()
-        ]
+        return update_events
 
     if mode == "debug":
-        node = _extract_node_name(data)
+        metadata = _extract_debug_metadata(data)
+        node = metadata.get("node")
+        debug_type = metadata.get("debug_type")
+        step = metadata.get("step")
+        task_id = metadata.get("task_id")
         events: list[tuple[str, dict[str, Any]]] = []
-        if node and node not in started_nodes:
-            started_nodes.add(node)
+
+        if isinstance(node, str) and node.strip():
+            runtime.ensure_node(node)
+
+        should_emit_start = False
+        start_message = None
+
+        if debug_type == "task" and isinstance(node, str):
+            should_emit_start = True
+            start_message = "Node '{node}' is now active and thinking (iteration {iteration})."
+        elif isinstance(node, str) and node != runtime.current_active_node:
+            # Backward-compatible fallback for generic debug payloads that carry a
+            # node name but no explicit task marker.
+            should_emit_start = True
+            start_message = "Node '{node}' is now active and thinking."
+
+        if should_emit_start and isinstance(node, str):
+            runtime.node_iterations[node] = runtime.node_iterations.get(node, 0) + 1
+            iteration = runtime.node_iterations[node]
+            runtime.current_active_node = node
+            runtime.node_task_started[node] = perf_counter()
+            if isinstance(task_id, str):
+                runtime.node_task_id[node] = task_id
+
             events.append(
                 (
                     "on_node_start",
@@ -305,12 +530,45 @@ def _normalize_langgraph_stream_item(
                         "activity_score": 1.0,
                         "phase": NODE_PHASES.get(node, "runtime"),
                         "severity": "info",
-                        "message": f"Node '{node}' is now active and thinking.",
+                        "message": (start_message or "Node '{node}' is now active and thinking.").format(
+                            node=node,
+                            iteration=iteration,
+                        ),
+                        "details": {
+                            "debug_type": debug_type,
+                            "step": step,
+                            "task_id": task_id,
+                            "triggers": metadata.get("triggers"),
+                            "iteration": iteration,
+                        },
+                        "iteration": iteration,
                         "namespace": namespace,
                         "raw": raw,
                     },
                 )
             )
+
+        duration_ms = None
+        if debug_type == "task_result" and isinstance(node, str):
+            started_at = runtime.node_task_started.get(node)
+            if started_at is not None:
+                duration_ms = int((perf_counter() - started_at) * 1000)
+
+        debug_message = "Debug event observed from LangGraph runtime."
+        if debug_type == "task" and isinstance(node, str):
+            iteration = runtime.node_iterations.get(node)
+            debug_message = f"LangGraph dispatched task for node '{node}' (iteration {iteration})."
+        elif debug_type == "task_result" and isinstance(node, str):
+            iteration = runtime.node_iterations.get(node)
+            if metadata.get("error"):
+                debug_message = (
+                    f"LangGraph task_result for node '{node}' (iteration {iteration}) reported an error."
+                )
+            else:
+                debug_message = (
+                    f"LangGraph task_result for node '{node}' (iteration {iteration}) completed."
+                )
+
         events.append(
             (
                 "on_debug_event",
@@ -320,7 +578,17 @@ def _normalize_langgraph_stream_item(
                     "activity_score": 0.6 if node else 0.0,
                     "phase": NODE_PHASES.get(node, "runtime") if node else "runtime",
                     "severity": "debug",
-                    "message": "Debug event observed from LangGraph runtime.",
+                    "message": debug_message,
+                    "details": {
+                        "debug_type": debug_type,
+                        "step": step,
+                        "task_id": task_id,
+                        "triggers": metadata.get("triggers"),
+                        "error": metadata.get("error"),
+                        "interrupts": metadata.get("interrupts"),
+                    },
+                    "iteration": runtime.node_iterations.get(node) if isinstance(node, str) else None,
+                    "duration_ms": duration_ms,
                     "namespace": namespace,
                     "raw": raw,
                 },
@@ -340,6 +608,7 @@ def _normalize_langgraph_stream_item(
                 "kind": "unhandled_mode",
                 "mode": mode,
                 "message": f"Unhandled stream mode '{mode}'.",
+                "details": {"mode": mode},
                 "namespace": namespace,
                 "raw": raw,
             },
@@ -381,6 +650,21 @@ def _resolve_api_key(payload: RunWorkflowRequest, header_api_key: str | None) ->
     if token:
         return token
     raise ValueError("api_key is required in body or X-API-KEY header.")
+
+
+def _resolve_workspace_session(
+    header_workspace_id: str | None = None,
+    request_workspace_id: str | None = None,
+    query_workspace_id: str | None = None,
+):
+    workspace_service.cleanup_expired_sessions()
+    candidate = (
+        (request_workspace_id or "").strip()
+        or (query_workspace_id or "").strip()
+        or (header_workspace_id or "").strip()
+        or None
+    )
+    return workspace_service.resolve_workspace_session(candidate)
 
 
 def _workspace_error_response(exc: Exception) -> JSONResponse:
@@ -460,78 +744,207 @@ def graph_schema() -> dict[str, object]:
     return get_graph_schema()
 
 
-@app.get("/workspace/tree", response_model=WorkspaceTreeResponse)
-def workspace_tree():
+@app.post("/workspace/session", response_model=WorkspaceSessionResponse)
+def workspace_session_create():
     try:
+        workspace_service.cleanup_expired_sessions()
+        session = workspace_service.create_session()
+        return WorkspaceSessionResponse(**session.to_public())
+    except Exception as exc:  # pragma: no cover
+        return _workspace_error_response(exc)
+
+
+@app.post("/workspace/session/{workspace_id}/touch", response_model=WorkspaceSessionResponse)
+def workspace_session_touch(workspace_id: str):
+    try:
+        workspace_service.cleanup_expired_sessions()
+        session = workspace_service.touch_session(workspace_id)
+        return WorkspaceSessionResponse(**session.to_public())
+    except Exception as exc:
+        return _workspace_error_response(exc)
+
+
+@app.delete("/workspace/session/{workspace_id}")
+def workspace_session_delete(workspace_id: str):
+    try:
+        workspace_service.cleanup_expired_sessions()
+        workspace_service.delete_session(workspace_id)
+        return {"workspace_id": workspace_id, "deleted": True}
+    except Exception as exc:
+        return _workspace_error_response(exc)
+
+
+@app.get("/workspace/tree", response_model=WorkspaceTreeResponse)
+def workspace_tree(
+    workspace_id: str | None = Query(default=None),
+    x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+):
+    try:
+        session = _resolve_workspace_session(
+            header_workspace_id=x_workspace_id,
+            query_workspace_id=workspace_id,
+        )
         return WorkspaceTreeResponse(
             root="generated_project",
-            nodes=workspace_service.list_tree(),
+            workspace_id=session.workspace_id,
+            expires_at=session.expires_at.isoformat(),
+            nodes=workspace_service.list_tree(workspace_id=session.workspace_id),
         )
     except Exception as exc:  # pragma: no cover
         return _workspace_error_response(exc)
 
 
 @app.get("/workspace/files", response_model=WorkspaceFilesResponse)
-def workspace_files():
+def workspace_files(
+    workspace_id: str | None = Query(default=None),
+    x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+):
     try:
-        files, skipped_binary = workspace_service.list_flat_text_files()
-        return WorkspaceFilesResponse(files=files, skipped_binary=skipped_binary)
+        session = _resolve_workspace_session(
+            header_workspace_id=x_workspace_id,
+            query_workspace_id=workspace_id,
+        )
+        files, skipped_binary = workspace_service.list_flat_text_files(
+            workspace_id=session.workspace_id
+        )
+        return WorkspaceFilesResponse(
+            workspace_id=session.workspace_id,
+            expires_at=session.expires_at.isoformat(),
+            files=files,
+            skipped_binary=skipped_binary,
+        )
     except Exception as exc:  # pragma: no cover
         return _workspace_error_response(exc)
 
 
 @app.get("/workspace/file", response_model=WorkspaceFileResponse)
-def workspace_file(path: str = Query(..., min_length=1)):
+def workspace_file(
+    path: str = Query(..., min_length=1),
+    workspace_id: str | None = Query(default=None),
+    x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+):
     try:
-        return WorkspaceFileResponse(path=path, content=workspace_service.read_text_file(path))
+        session = _resolve_workspace_session(
+            header_workspace_id=x_workspace_id,
+            query_workspace_id=workspace_id,
+        )
+        return WorkspaceFileResponse(
+            workspace_id=session.workspace_id,
+            expires_at=session.expires_at.isoformat(),
+            path=path,
+            content=workspace_service.read_text_file(path, workspace_id=session.workspace_id),
+        )
     except Exception as exc:
         return _workspace_error_response(exc)
 
 
 @app.put("/workspace/file", response_model=WorkspaceFileResponse)
-def workspace_file_write(payload: WorkspaceFileWriteRequest):
+def workspace_file_write(
+    payload: WorkspaceFileWriteRequest,
+    x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+):
     try:
-        relative = workspace_service.write_text_file(payload.path, payload.content)
-        return WorkspaceFileResponse(path=relative, content=payload.content)
+        session = _resolve_workspace_session(
+            header_workspace_id=x_workspace_id,
+            request_workspace_id=payload.workspace_id,
+        )
+        relative = workspace_service.write_text_file(
+            payload.path,
+            payload.content,
+            workspace_id=session.workspace_id,
+        )
+        return WorkspaceFileResponse(
+            workspace_id=session.workspace_id,
+            expires_at=session.expires_at.isoformat(),
+            path=relative,
+            content=payload.content,
+        )
     except Exception as exc:
         return _workspace_error_response(exc)
 
 
 @app.post("/workspace/folder")
-def workspace_folder_create(payload: WorkspaceFolderCreateRequest):
+def workspace_folder_create(
+    payload: WorkspaceFolderCreateRequest,
+    x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+):
     try:
-        created = workspace_service.create_folder(payload.path)
-        return {"path": created}
+        session = _resolve_workspace_session(
+            header_workspace_id=x_workspace_id,
+            request_workspace_id=payload.workspace_id,
+        )
+        created = workspace_service.create_folder(payload.path, workspace_id=session.workspace_id)
+        return {
+            "path": created,
+            "workspace_id": session.workspace_id,
+            "expires_at": session.expires_at.isoformat(),
+        }
     except Exception as exc:
         return _workspace_error_response(exc)
 
 
 @app.post("/workspace/rename")
-def workspace_path_rename(payload: WorkspaceRenameRequest):
+def workspace_path_rename(
+    payload: WorkspaceRenameRequest,
+    x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+):
     try:
+        session = _resolve_workspace_session(
+            header_workspace_id=x_workspace_id,
+            request_workspace_id=payload.workspace_id,
+        )
         renamed = workspace_service.rename_path(
             payload.from_path,
             payload.to_path,
             overwrite=payload.overwrite,
+            workspace_id=session.workspace_id,
         )
-        return {"path": renamed}
+        return {
+            "path": renamed,
+            "workspace_id": session.workspace_id,
+            "expires_at": session.expires_at.isoformat(),
+        }
     except Exception as exc:
         return _workspace_error_response(exc)
 
 
 @app.delete("/workspace/path")
-def workspace_path_delete(path: str = Query(..., min_length=1), recursive: bool = False):
+def workspace_path_delete(
+    path: str = Query(..., min_length=1),
+    recursive: bool = False,
+    workspace_id: str | None = Query(default=None),
+    x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+):
     try:
-        deleted = workspace_service.delete_path(path, recursive=recursive)
-        return {"path": deleted}
+        session = _resolve_workspace_session(
+            header_workspace_id=x_workspace_id,
+            query_workspace_id=workspace_id,
+        )
+        deleted = workspace_service.delete_path(
+            path,
+            recursive=recursive,
+            workspace_id=session.workspace_id,
+        )
+        return {
+            "path": deleted,
+            "workspace_id": session.workspace_id,
+            "expires_at": session.expires_at.isoformat(),
+        }
     except Exception as exc:
         return _workspace_error_response(exc)
 
 
 @app.get("/workspace/download")
-def workspace_download():
+def workspace_download(
+    workspace_id: str | None = Query(default=None),
+    x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+):
     try:
-        payload = workspace_service.build_workspace_zip()
+        session = _resolve_workspace_session(
+            header_workspace_id=x_workspace_id,
+            query_workspace_id=workspace_id,
+        )
+        payload = workspace_service.build_workspace_zip(workspace_id=session.workspace_id)
     except Exception as exc:  # pragma: no cover
         return _workspace_error_response(exc)
     return Response(
@@ -546,22 +959,29 @@ def workspace_download():
 async def run_agent_workflow(
     payload: RunWorkflowRequest,
     x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+    x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
 ):
     run_id = str(uuid4())
+    workspace_session = None
 
     try:
         _validate_prompt_payload(payload)
         api_key = _resolve_api_key(payload, x_api_key)
-        llm = build_chat_model(api_key=api_key, model=payload.model)
-        result = await run_in_threadpool(
-            run_workflow,
-            payload.user_prompt,
-            llm,
-            payload.recursion_limit,
-            payload.mutable_prompt,
-            payload.prompt_overrides,
-            None,
+        workspace_session = _resolve_workspace_session(
+            header_workspace_id=x_workspace_id,
+            request_workspace_id=payload.workspace_id,
         )
+        llm = build_chat_model(api_key=api_key, model=payload.model)
+        with workspace_service.workspace_context(workspace_session.workspace_id):
+            result = await run_in_threadpool(
+                run_workflow,
+                payload.user_prompt,
+                llm,
+                payload.recursion_limit,
+                payload.mutable_prompt,
+                payload.prompt_overrides,
+                None,
+            )
     except ValueError as exc:
         return _error_response(422, "invalid_request", str(exc))
     except Exception as exc:  # pragma: no cover
@@ -571,6 +991,7 @@ async def run_agent_workflow(
     return RunWorkflowResponse(
         status=result.get("status", "DONE"),
         provider=PROVIDER_NAME,
+        workspace_id=workspace_session.workspace_id if workspace_session else None,
         plan=result.get("plan"),
         task_plan=result.get("detailed_ins"),
     )
@@ -581,12 +1002,18 @@ async def run_agent_workflow(
 async def stream_agent_workflow(
     payload: RunWorkflowRequest,
     x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+    x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
 ):
     run_id = str(uuid4())
+    workspace_session = None
 
     try:
         _validate_prompt_payload(payload)
         api_key = _resolve_api_key(payload, x_api_key)
+        workspace_session = _resolve_workspace_session(
+            header_workspace_id=x_workspace_id,
+            request_workspace_id=payload.workspace_id,
+        )
         llm = build_chat_model(api_key=api_key, model=payload.model)
     except ValueError as exc:
         return _error_response(422, "invalid_request", str(exc))
@@ -619,6 +1046,7 @@ async def stream_agent_workflow(
 
         payload_out = {
             "run_id": run_id,
+            "workspace_id": workspace_session.workspace_id if workspace_session else None,
             "event_id": event_id,
             "timestamp": _iso_utc_now(),
             "node": node,
@@ -627,6 +1055,11 @@ async def stream_agent_workflow(
             "phase": payload_in.get("phase"),
             "severity": payload_in.get("severity"),
             "message": payload_in.get("message"),
+            "details": payload_in.get("details"),
+            "hint": payload_in.get("hint"),
+            "error_type": payload_in.get("error_type"),
+            "iteration": payload_in.get("iteration"),
+            "duration_ms": payload_in.get("duration_ms"),
             "namespace": payload_in.get("namespace"),
             "raw": payload_in.get("raw"),
             "active_node_id": active_node_id,
@@ -643,6 +1076,11 @@ async def stream_agent_workflow(
                     "phase",
                     "severity",
                     "message",
+                    "details",
+                    "hint",
+                    "error_type",
+                    "iteration",
+                    "duration_ms",
                     "namespace",
                     "raw",
                 }
@@ -651,7 +1089,8 @@ async def stream_agent_workflow(
         return _format_sse(event_name, payload_out)
 
     async def stream():
-        started_nodes: set[str] = set()
+        runtime = StreamRuntimeState()
+        run_started_at = perf_counter()
         yield emit(
             "run_started",
             {
@@ -661,22 +1100,29 @@ async def stream_agent_workflow(
                 "phase": "system",
                 "severity": "info",
                 "message": "Workflow run started with verbose stream modes: debug/messages/updates.",
+                "details": {
+                    "stream_mode": ["debug", "messages", "updates"],
+                    "recursion_limit": payload.recursion_limit,
+                },
                 "namespace": None,
                 "raw": None,
                 "provider": PROVIDER_NAME,
             },
         )
         try:
-            async for stream_item in astream_workflow(
-                payload.user_prompt,
-                llm,
-                payload.recursion_limit,
-                payload.mutable_prompt,
-                payload.prompt_overrides,
+            with workspace_service.workspace_context(
+                workspace_session.workspace_id if workspace_session else None
             ):
-                normalized_events = _normalize_langgraph_stream_item(stream_item, started_nodes)
-                for event_name, event_payload in normalized_events:
-                    yield emit(event_name, event_payload)
+                async for stream_item in astream_workflow(
+                    payload.user_prompt,
+                    llm,
+                    payload.recursion_limit,
+                    payload.mutable_prompt,
+                    payload.prompt_overrides,
+                ):
+                    normalized_events = _normalize_langgraph_stream_item(stream_item, runtime)
+                    for event_name, event_payload in normalized_events:
+                        yield emit(event_name, event_payload)
 
             for node_id, state in list(node_states.items()):
                 if state == "active":
@@ -689,6 +1135,7 @@ async def stream_agent_workflow(
                             "phase": NODE_PHASES.get(node_id, "runtime"),
                             "severity": "info",
                             "message": f"Node '{node_id}' completed with update payload.",
+                            "details": {"status": "completed_on_finalize"},
                             "namespace": None,
                             "raw": {"source": "stream_finalize"},
                             "update": {"status": "completed_on_finalize"},
@@ -704,6 +1151,7 @@ async def stream_agent_workflow(
                     "phase": "system",
                     "severity": "info",
                     "message": "Workflow finished successfully.",
+                    "details": {"run_duration_ms": int((perf_counter() - run_started_at) * 1000)},
                     "namespace": None,
                     "raw": None,
                     "status": "DONE",
@@ -711,6 +1159,8 @@ async def stream_agent_workflow(
             )
         except Exception as exc:  # pragma: no cover
             logger.exception("Workflow stream failed run_id=%s", run_id)
+            classification = _classify_exception(exc)
+            exc_chain = _exception_chain(exc)
             if active_node_id and active_node_id in node_states:
                 node_states[active_node_id] = "error"
                 activity_scores[active_node_id] = 0.0
@@ -721,8 +1171,15 @@ async def stream_agent_workflow(
                     "state": "error",
                     "activity_score": 0.0,
                     "phase": "system",
-                    "severity": "error",
+                    "severity": classification["severity"],
+                    "error_type": classification["error_type"],
+                    "hint": classification["hint"],
                     "message": "Workflow failed during streaming.",
+                    "details": {
+                        "primary_error": exc_chain[0] if exc_chain else None,
+                        "exception_chain": exc_chain,
+                        "run_duration_ms": int((perf_counter() - run_started_at) * 1000),
+                    },
                     "namespace": None,
                     "raw": {"exception": str(exc), "type": exc.__class__.__name__},
                 },

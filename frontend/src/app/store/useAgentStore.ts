@@ -2,18 +2,25 @@ import { create } from "zustand";
 
 import {
   API_BASE_URL,
+  createWorkspaceSession,
   createWorkspaceFolder,
+  deleteWorkspaceSession,
   deleteWorkspacePath,
   extractErrorMessage,
   fetchGraphSchema,
+  fetchPromptSchema,
   fetchWorkspaceFiles,
   fetchWorkspaceTree,
+  getWorkspaceId,
   type GraphSchemaEdge,
   type GraphSchemaNode,
   type NodeId,
+  type PromptSchemaResponse,
   readWorkspaceFile,
   renameWorkspacePath,
   type RunAgentRequest,
+  setWorkspaceId,
+  touchWorkspaceSession,
   type WorkspaceTreeNode,
   writeWorkspaceFile
 } from "@/app/lib/api-client";
@@ -26,11 +33,17 @@ export interface AgentLogEvent {
   event: string;
   event_id?: number;
   timestamp: string;
+  workspace_id?: string;
   node: string | null;
   state: NodeState | null;
   activity_score: number | null;
   severity: string;
   message: string;
+  details?: Record<string, unknown> | null;
+  hint?: string | null;
+  error_type?: string | null;
+  iteration?: number | null;
+  duration_ms?: number | null;
   raw?: unknown;
   namespace?: unknown;
 }
@@ -43,6 +56,8 @@ export interface StartAgentRunInput {
 }
 
 interface AgentStoreState {
+  workspaceId: string | null;
+  workspaceExpiresAt: string | null;
   files: Record<string, string>;
   skippedBinary: string[];
   treeNodes: WorkspaceTreeNode[];
@@ -55,10 +70,16 @@ interface AgentStoreState {
   logs: AgentLogEvent[];
   isGenerating: boolean;
   promptOverrides: Record<NodeId, string>;
+  promptSchema: PromptSchemaResponse | null;
+  maxMutablePromptChars: number;
+  immutableRules: string[];
   errorMessage: string | null;
+  initWorkspaceSession: () => Promise<void>;
+  resetWorkspaceSession: () => Promise<void>;
   fetchFiles: () => Promise<void>;
   fetchTree: () => Promise<void>;
   fetchGraphSchema: () => Promise<void>;
+  fetchPromptSchema: () => Promise<void>;
   readFile: (path: string) => Promise<void>;
   updateFileContent: (path: string, content: string) => Promise<void>;
   createFolder: (path: string) => Promise<void>;
@@ -102,6 +123,14 @@ function toNumber(value: unknown): number | null {
     }
   }
   return null;
+}
+
+function toInteger(value: unknown): number | null {
+  const numeric = toNumber(value);
+  if (numeric === null) {
+    return null;
+  }
+  return Number.isInteger(numeric) ? numeric : Math.round(numeric);
 }
 
 function getStoredApiKey(): string {
@@ -161,7 +190,32 @@ async function readErrorPayload(response: Response): Promise<unknown> {
   }
 }
 
+function toObjectOrNull(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function shouldLogTokenEvent(data: Record<string, unknown>): boolean {
+  const details = toObjectOrNull(data.details);
+  const tokenIndex = toInteger(details?.token_index);
+  const token = typeof data.token === "string" ? data.token : "";
+  if (tokenIndex === null) {
+    return token.trim().length > 0;
+  }
+  if (tokenIndex % 25 === 0) {
+    return true;
+  }
+  if (token.includes("\n")) {
+    return true;
+  }
+  return /[.!?]$/.test(token.trim());
+}
+
 export const useAgentStore = create<AgentStoreState>((set, get) => ({
+  workspaceId: null,
+  workspaceExpiresAt: null,
   files: {},
   skippedBinary: [],
   treeNodes: [],
@@ -186,12 +240,69 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     architect: "",
     coder: ""
   },
+  promptSchema: null,
+  maxMutablePromptChars: 4000,
+  immutableRules: [],
   errorMessage: null,
+  initWorkspaceSession: async () => {
+    try {
+      const existingWorkspaceId = get().workspaceId ?? getWorkspaceId();
+      if (existingWorkspaceId) {
+        const touched = await touchWorkspaceSession(existingWorkspaceId);
+        setWorkspaceId(touched.workspace_id);
+        set({
+          workspaceId: touched.workspace_id,
+          workspaceExpiresAt: touched.expires_at,
+          errorMessage: null,
+        });
+        return;
+      }
+
+      const created = await createWorkspaceSession();
+      setWorkspaceId(created.workspace_id);
+      set({
+        workspaceId: created.workspace_id,
+        workspaceExpiresAt: created.expires_at,
+        errorMessage: null,
+      });
+    } catch (error) {
+      pushStoreError(set, `Failed to initialize workspace session: ${String(error)}`);
+    }
+  },
+  resetWorkspaceSession: async () => {
+    try {
+      const previousWorkspaceId = get().workspaceId;
+      if (previousWorkspaceId) {
+        await deleteWorkspaceSession(previousWorkspaceId);
+      }
+
+      const created = await createWorkspaceSession();
+      setWorkspaceId(created.workspace_id);
+      set({
+        workspaceId: created.workspace_id,
+        workspaceExpiresAt: created.expires_at,
+        files: {},
+        treeNodes: [],
+        activeFilePath: null,
+        skippedBinary: [],
+        logs: [],
+        errorMessage: null,
+      });
+    } catch (error) {
+      pushStoreError(set, `Failed to reset workspace session: ${String(error)}`);
+    }
+  },
   fetchFiles: async () => {
     try {
+      if (!get().workspaceId) {
+        await get().initWorkspaceSession();
+      }
       const response = await fetchWorkspaceFiles();
       const paths = Object.keys(response.files).sort();
+      setWorkspaceId(response.workspace_id);
       set((state) => ({
+        workspaceId: response.workspace_id,
+        workspaceExpiresAt: response.expires_at,
         files: response.files,
         skippedBinary: response.skipped_binary,
         activeFilePath:
@@ -208,8 +319,17 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   },
   fetchTree: async () => {
     try {
+      if (!get().workspaceId) {
+        await get().initWorkspaceSession();
+      }
       const response = await fetchWorkspaceTree();
-      set({ treeNodes: response.nodes, errorMessage: null });
+      setWorkspaceId(response.workspace_id);
+      set({
+        workspaceId: response.workspace_id,
+        workspaceExpiresAt: response.expires_at,
+        treeNodes: response.nodes,
+        errorMessage: null,
+      });
     } catch (error) {
       pushStoreError(set, `Failed to load workspace tree: ${String(error)}`);
     }
@@ -222,10 +342,29 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       pushStoreError(set, `Failed to load graph schema: ${String(error)}`);
     }
   },
+  fetchPromptSchema: async () => {
+    try {
+      const response = await fetchPromptSchema();
+      set({
+        promptSchema: response,
+        maxMutablePromptChars: response.policy.max_mutable_prompt_chars,
+        immutableRules: response.policy.immutable_rules,
+        errorMessage: null,
+      });
+    } catch (error) {
+      pushStoreError(set, `Failed to load prompt schema: ${String(error)}`);
+    }
+  },
   readFile: async (path: string) => {
     try {
+      if (!get().workspaceId) {
+        await get().initWorkspaceSession();
+      }
       const response = await readWorkspaceFile(path);
+      setWorkspaceId(response.workspace_id);
       set((state) => ({
+        workspaceId: response.workspace_id,
+        workspaceExpiresAt: response.expires_at,
         files: {
           ...state.files,
           [response.path]: response.content
@@ -246,8 +385,16 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     }));
 
     try {
-      await writeWorkspaceFile(path, content);
-      set({ errorMessage: null });
+      if (!get().workspaceId) {
+        await get().initWorkspaceSession();
+      }
+      const response = await writeWorkspaceFile(path, content);
+      setWorkspaceId(response.workspace_id);
+      set({
+        workspaceId: response.workspace_id,
+        workspaceExpiresAt: response.expires_at,
+        errorMessage: null,
+      });
     } catch (error) {
       pushStoreError(set, `Failed to save file '${path}': ${String(error)}`);
       throw error;
@@ -255,6 +402,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   },
   createFolder: async (path: string) => {
     try {
+      if (!get().workspaceId) {
+        await get().initWorkspaceSession();
+      }
       await createWorkspaceFolder(path);
       await Promise.all([get().fetchTree(), get().fetchFiles()]);
       set({ errorMessage: null });
@@ -264,6 +414,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   },
   renamePath: async (fromPath: string, toPath: string, overwrite = false) => {
     try {
+      if (!get().workspaceId) {
+        await get().initWorkspaceSession();
+      }
       await renameWorkspacePath(fromPath, toPath, overwrite);
       await Promise.all([get().fetchTree(), get().fetchFiles()]);
       if (get().activeFilePath === fromPath) {
@@ -276,6 +429,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   },
   deletePath: async (path: string, recursive = false) => {
     try {
+      if (!get().workspaceId) {
+        await get().initWorkspaceSession();
+      }
       await deleteWorkspacePath(path, recursive);
       await Promise.all([get().fetchTree(), get().fetchFiles()]);
       if (get().activeFilePath === path) {
@@ -299,12 +455,18 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       return;
     }
 
+    if (!get().workspaceId) {
+      await get().initWorkspaceSession();
+    }
+    const workspaceId = get().workspaceId;
+
     const requestPayload: RunAgentRequest = {
       user_prompt: userPrompt,
       model: input.model,
       recursion_limit: input.recursionLimit,
       mutable_prompt: input.mutablePrompt ?? null,
       prompt_overrides: buildPromptOverrides(get().promptOverrides),
+      workspace_id: workspaceId,
       api_key: localApiKey
     };
 
@@ -330,7 +492,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-API-KEY": localApiKey
+          "X-API-KEY": localApiKey,
+          ...(workspaceId ? { "X-Workspace-ID": workspaceId } : {}),
         },
         body: JSON.stringify(requestPayload)
       });
@@ -366,6 +529,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     const node = typeof data.node === "string" ? data.node : null;
     const state = toNodeState(data.state);
     const score = toNumber(data.activity_score);
+    const workspaceId = typeof data.workspace_id === "string" ? data.workspace_id : null;
+    if (workspaceId) {
+      setWorkspaceId(workspaceId);
+    }
     const emittedNodeStates = asRecord(data.node_states);
     const emittedActivityByNode = asRecord(data.activity_by_node_id);
 
@@ -394,6 +561,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         nextActivity[node] = score;
       }
 
+      const skipTokenLog =
+        eventName === "on_chat_model_stream" && !shouldLogTokenEvent(data);
+
       const nextLog: AgentLogEvent = {
         id:
           typeof data.event_id === "number"
@@ -402,6 +572,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         event: eventName,
         event_id: typeof data.event_id === "number" ? data.event_id : undefined,
         timestamp: typeof data.timestamp === "string" ? data.timestamp : nowIso(),
+        workspace_id: workspaceId ?? undefined,
         node,
         state,
         activity_score: score,
@@ -412,12 +583,18 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
             : eventName === "on_chat_model_stream"
               ? "Streaming model output token."
               : eventName,
+        details: toObjectOrNull(data.details),
+        hint: typeof data.hint === "string" ? data.hint : null,
+        error_type: typeof data.error_type === "string" ? data.error_type : null,
+        iteration: toInteger(data.iteration),
+        duration_ms: toInteger(data.duration_ms),
         raw: data.raw,
         namespace: data.namespace
       };
 
       return {
-        logs: [...store.logs, nextLog],
+        workspaceId: workspaceId ?? store.workspaceId,
+        logs: skipTokenLog ? store.logs : [...store.logs, nextLog],
         activeNodeId:
           eventName === "on_node_start" && node
             ? node
@@ -441,9 +618,16 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   },
   downloadWorkspaceZip: async () => {
     const localApiKey = getStoredApiKey();
+    if (!get().workspaceId) {
+      await get().initWorkspaceSession();
+    }
+    const workspaceId = get().workspaceId;
     try {
       const response = await fetch(`${API_BASE_URL}/workspace/download`, {
-        headers: localApiKey ? { "X-API-KEY": localApiKey } : undefined
+        headers: {
+          ...(localApiKey ? { "X-API-KEY": localApiKey } : {}),
+          ...(workspaceId ? { "X-Workspace-ID": workspaceId } : {}),
+        },
       });
       if (!response.ok) {
         const payload = await readErrorPayload(response);

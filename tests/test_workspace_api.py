@@ -56,7 +56,11 @@ class WorkspaceApiTests(unittest.TestCase):
             )
         self.assertEqual(rename_response.status_code, 200)
         self.assertEqual(rename_response.json()["path"], "src/main.py")
-        mock_rename.assert_called_once_with("main.py", "src/main.py", overwrite=False)
+        self.assertEqual(mock_rename.call_count, 1)
+        rename_call = mock_rename.call_args
+        self.assertEqual(rename_call.args, ("main.py", "src/main.py"))
+        self.assertFalse(rename_call.kwargs.get("overwrite"))
+        self.assertEqual(rename_call.kwargs.get("workspace_id"), rename_response.json()["workspace_id"])
 
         with patch("agent.api.workspace_service.delete_path", return_value="src/main.py") as mock_delete:
             delete_response = self.client.delete(
@@ -65,7 +69,11 @@ class WorkspaceApiTests(unittest.TestCase):
             )
         self.assertEqual(delete_response.status_code, 200)
         self.assertEqual(delete_response.json()["path"], "src/main.py")
-        mock_delete.assert_called_once_with("src/main.py", recursive=False)
+        self.assertEqual(mock_delete.call_count, 1)
+        delete_call = mock_delete.call_args
+        self.assertEqual(delete_call.args, ("src/main.py",))
+        self.assertFalse(delete_call.kwargs.get("recursive"))
+        self.assertEqual(delete_call.kwargs.get("workspace_id"), delete_response.json()["workspace_id"])
 
     def test_non_recursive_directory_delete_conflict(self) -> None:
         self.client.put("/workspace/file", json={"path": "src/a.py", "content": "x"})
@@ -94,6 +102,31 @@ class WorkspaceApiTests(unittest.TestCase):
         payload = response.json()
         self.assertIn("text.txt", payload["files"])
         self.assertIn("binary.bin", payload["skipped_binary"])
+
+    def test_workspace_session_create_and_delete(self) -> None:
+        create_response = self.client.post("/workspace/session")
+        self.assertEqual(create_response.status_code, 200)
+        session_payload = create_response.json()
+        workspace_id = session_payload["workspace_id"]
+        self.assertTrue(workspace_id)
+        self.assertIn("expires_at", session_payload)
+
+        write_response = self.client.put(
+            "/workspace/file",
+            json={"path": "session.txt", "content": "scoped"},
+            headers={"X-Workspace-ID": workspace_id},
+        )
+        self.assertEqual(write_response.status_code, 200)
+        self.assertEqual(write_response.json()["workspace_id"], workspace_id)
+
+        files_response = self.client.get("/workspace/files", headers={"X-Workspace-ID": workspace_id})
+        self.assertEqual(files_response.status_code, 200)
+        self.assertEqual(files_response.json()["workspace_id"], workspace_id)
+        self.assertIn("session.txt", files_response.json()["files"])
+
+        delete_response = self.client.delete(f"/workspace/session/{workspace_id}")
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertTrue(delete_response.json()["deleted"])
 
 
 if __name__ == "__main__":

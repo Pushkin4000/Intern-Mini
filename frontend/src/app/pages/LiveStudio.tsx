@@ -25,7 +25,7 @@ import {
   ShieldCheck,
   Info,
 } from "lucide-react";
-import type { NodeId, WorkspaceTreeNode } from "@/app/lib/api-client";
+import type { NodeId, PromptNodeSchema, WorkspaceTreeNode } from "@/app/lib/api-client";
 import { useAgentStore } from "@/app/store/useAgentStore";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -42,28 +42,21 @@ interface FileNode {
 
 // ─── Mock Data ────────────────────────────────────────────────────────────────
 
-// Default mutable prompt bodies shown in the override panel
-const DEFAULT_PROMPTS: Record<NodeId, { label: string; color: string; placeholder: string; default: string }> = {
+const NODE_UI_CONFIG: Record<NodeId, { label: string; color: string; placeholder: string }> = {
   planner: {
     label: "Planner",
     color: "#a78bfa",
     placeholder: "Override the planner's mutable prompt body...",
-    default:
-      "Analyze the user request carefully. Break it down into a structured project plan with phases, key deliverables, dependencies between components, and clear success criteria. Be explicit about what files will be needed and what each module is responsible for.",
   },
   architect: {
     label: "Architect",
     color: "#06b6d4",
     placeholder: "Override the architect's mutable prompt body...",
-    default:
-      "Based on the plan, design a clean system architecture. Define the exact file structure, module boundaries, data flow between components, API contracts, and data models. Keep the architecture minimal and production-ready.",
   },
   coder: {
     label: "Coder",
     color: "#34d399",
     placeholder: "Override the coder's mutable prompt body...",
-    default:
-      "Implement the architecture step by step. For each task, write complete, working, well-commented code. Do not leave placeholder comments. Each file should be fully functional. Prefer simple, idiomatic patterns over complex abstractions.",
   },
 };
 
@@ -96,6 +89,20 @@ function formatLogTime(timestamp: string): string {
     return timestamp;
   }
   return date.toLocaleTimeString([], { hour12: false });
+}
+
+function formatLogDetails(details: Record<string, unknown> | null | undefined): string | null {
+  if (!details) {
+    return null;
+  }
+  const entries = Object.entries(details).filter(([, value]) => value !== null && value !== undefined);
+  if (entries.length === 0) {
+    return null;
+  }
+  return entries
+    .slice(0, 4)
+    .map(([key, value]) => `${key}=${typeof value === "object" ? JSON.stringify(value) : String(value)}`)
+    .join(" | ");
 }
 
 function readStoredApiKey(): string {
@@ -534,12 +541,23 @@ function ApiKeyModal({
 // ─── Prompt Override Panel ─────────────────────────────────────────────────────
 
 function PromptOverridePanel({
+  promptSchema,
+  immutableRules,
+  maxMutableChars,
   overrides,
   onChange,
 }: {
+  promptSchema: Record<NodeId, PromptNodeSchema> | null;
+  immutableRules: string[];
+  maxMutableChars: number;
   overrides: Record<NodeId, string>;
   onChange: (node: NodeId, value: string) => void;
 }) {
+  const nodeKeys: NodeId[] = ["planner", "architect", "coder"];
+  const rulesText = immutableRules.length
+    ? immutableRules.map((rule) => `- ${rule}`).join("\n")
+    : "Loading immutable rules from backend policy...";
+
   return (
     <div style={{ overflowY: "auto", flex: 1 }}>
       {/* Header */}
@@ -547,20 +565,66 @@ function PromptOverridePanel({
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
           <SlidersHorizontal size={12} color="#a78bfa" />
           <span style={{ fontSize: 11, fontWeight: 700, color: "#a78bfa", fontFamily: "'JetBrains Mono', monospace", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-            Prompt Overrides
+            System Prompt Editor
           </span>
         </div>
         <p style={{ fontSize: 11, color: "rgba(226,232,240,0.35)", margin: 0, lineHeight: 1.6 }}>
-          Override the <em>mutable body</em> of each node's prompt. Immutable rules and prefix are always preserved.
+          Immutable system rules and node prefixes are read-only. Only the mutable body is editable and sent as <code>prompt_overrides</code>.
         </p>
+      </div>
+
+      <div style={{ padding: "10px 12px 0" }}>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 10, color: "rgba(226,232,240,0.35)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+            Global Immutable Rules
+          </div>
+          <textarea
+            value={rulesText}
+            readOnly
+            rows={Math.min(8, Math.max(3, immutableRules.length + 1))}
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              borderRadius: 8,
+              background: "rgba(255,255,255,0.02)",
+              border: "1px solid rgba(226,232,240,0.18)",
+              color: "rgba(226,232,240,0.65)",
+              fontSize: 10,
+              fontFamily: "'JetBrains Mono', monospace",
+              lineHeight: 1.6,
+              resize: "vertical",
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+          />
+        </div>
       </div>
 
       {/* Node overrides */}
       <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 14 }}>
-        {(Object.keys(DEFAULT_PROMPTS) as NodeId[]).map((nodeKey) => {
-          const cfg = DEFAULT_PROMPTS[nodeKey];
+        {nodeKeys.map((nodeKey) => {
+          const cfg = NODE_UI_CONFIG[nodeKey];
+          const schemaNode = promptSchema?.[nodeKey];
           const currentValue = overrides[nodeKey] ?? "";
           const isModified = currentValue.trim() !== "";
+          const defaultMutable = schemaNode?.default_mutable ?? "";
+          const immutablePrefix =
+            schemaNode?.immutable_prefix ?? "Loading immutable prefix from /api/prompts...";
+          const effectiveMutable = currentValue.trim() ? currentValue : defaultMutable;
+          const effectivePreview = [
+            "GLOBAL IMMUTABLE RULES:",
+            rulesText,
+            "",
+            "NODE IMMUTABLE PREFIX:",
+            immutablePrefix,
+            "",
+            "MUTABLE LAYER:",
+            effectiveMutable || "[empty mutable body]",
+            "",
+            "RUNTIME CONTEXT:",
+            "{{context_block}}",
+          ].join("\n");
+
           return (
             <div key={nodeKey}>
               {/* Node label */}
@@ -626,7 +690,34 @@ function PromptOverridePanel({
                 )}
               </div>
 
+              <div style={{ fontSize: 10, color: "rgba(226,232,240,0.35)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                Immutable Prefix (Read-only)
+              </div>
+              <textarea
+                value={immutablePrefix}
+                readOnly
+                rows={4}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  background: "rgba(255,255,255,0.02)",
+                  border: "1px solid rgba(226,232,240,0.18)",
+                  color: "rgba(226,232,240,0.65)",
+                  fontSize: 10,
+                  fontFamily: "'JetBrains Mono', monospace",
+                  lineHeight: 1.6,
+                  resize: "vertical",
+                  outline: "none",
+                  boxSizing: "border-box",
+                  marginBottom: 8,
+                }}
+              />
+
               {/* Textarea */}
+              <div style={{ fontSize: 10, color: "rgba(226,232,240,0.35)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                Mutable Body (Editable)
+              </div>
               <textarea
                 value={currentValue}
                 onChange={(e) => onChange(nodeKey, e.target.value)}
@@ -646,11 +737,41 @@ function PromptOverridePanel({
                   boxSizing: "border-box",
                   transition: "border-color 0.2s, background 0.2s",
                 }}
-                placeholder={`${cfg.placeholder} ${cfg.default}`}
+                placeholder={defaultMutable || cfg.placeholder}
               />
-              <div style={{ fontSize: 10, color: "rgba(226,232,240,0.2)", marginTop: 3, textAlign: "right" }}>
-                {currentValue.length} / 4000 chars
+              <div
+                style={{
+                  fontSize: 10,
+                  color: currentValue.length > maxMutableChars ? "#f87171" : "rgba(226,232,240,0.2)",
+                  marginTop: 3,
+                  textAlign: "right",
+                }}
+              >
+                {currentValue.length} / {maxMutableChars} chars
               </div>
+
+              <div style={{ fontSize: 10, color: "rgba(226,232,240,0.35)", marginTop: 8, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                Effective Prompt Preview
+              </div>
+              <textarea
+                value={effectivePreview}
+                readOnly
+                rows={6}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  background: "rgba(255,255,255,0.02)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  color: "rgba(226,232,240,0.55)",
+                  fontSize: 10,
+                  fontFamily: "'JetBrains Mono', monospace",
+                  lineHeight: 1.6,
+                  resize: "vertical",
+                  outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
             </div>
           );
         })}
@@ -667,7 +788,7 @@ function PromptOverridePanel({
           <p style={{ fontSize: 10, color: "rgba(226,232,240,0.3)", margin: 0, lineHeight: 1.7 }}>
             Overrides apply to the next run. Sent via{" "}
             <code style={{ fontFamily: "'JetBrains Mono', monospace", color: "#a78bfa" }}>prompt_overrides</code>{" "}
-            in the request body. Max 4000 characters per node. Immutable rules and prefix cannot be modified.
+            in the request body. Max {maxMutableChars} characters per node. Immutable rules and prefix cannot be modified.
           </p>
         </div>
       </div>
@@ -686,6 +807,8 @@ export function LiveStudio() {
   const [isSaving, setIsSaving] = useState(false);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const workspaceId = useAgentStore((state) => state.workspaceId);
+  const workspaceExpiresAt = useAgentStore((state) => state.workspaceExpiresAt);
   const files = useAgentStore((state) => state.files);
   const skippedBinary = useAgentStore((state) => state.skippedBinary);
   const treeNodes = useAgentStore((state) => state.treeNodes);
@@ -696,11 +819,17 @@ export function LiveStudio() {
   const promptOverrides = useAgentStore((state) => state.promptOverrides);
   const nodeStatusById = useAgentStore((state) => state.nodeStatusById);
   const activityByNodeId = useAgentStore((state) => state.activityByNodeId);
+  const promptSchema = useAgentStore((state) => state.promptSchema);
+  const maxMutablePromptChars = useAgentStore((state) => state.maxMutablePromptChars);
+  const immutableRules = useAgentStore((state) => state.immutableRules);
   const errorMessage = useAgentStore((state) => state.errorMessage);
 
+  const initWorkspaceSession = useAgentStore((state) => state.initWorkspaceSession);
+  const resetWorkspaceSession = useAgentStore((state) => state.resetWorkspaceSession);
   const fetchFiles = useAgentStore((state) => state.fetchFiles);
   const fetchTree = useAgentStore((state) => state.fetchTree);
   const fetchGraphSchema = useAgentStore((state) => state.fetchGraphSchema);
+  const fetchPromptSchema = useAgentStore((state) => state.fetchPromptSchema);
   const readFile = useAgentStore((state) => state.readFile);
   const updateFileContent = useAgentStore((state) => state.updateFileContent);
   const startAgentRun = useAgentStore((state) => state.startAgentRun);
@@ -709,8 +838,11 @@ export function LiveStudio() {
   const setPromptOverride = useAgentStore((state) => state.setPromptOverride);
 
   useEffect(() => {
-    void Promise.all([fetchFiles(), fetchTree(), fetchGraphSchema()]);
-  }, [fetchFiles, fetchTree, fetchGraphSchema]);
+    void (async () => {
+      await initWorkspaceSession();
+      await Promise.all([fetchFiles(), fetchTree(), fetchGraphSchema(), fetchPromptSchema()]);
+    })();
+  }, [fetchFiles, fetchGraphSchema, fetchPromptSchema, fetchTree, initWorkspaceSession]);
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -738,7 +870,7 @@ export function LiveStudio() {
   };
 
   const handleOverrideChange = (node: NodeId, value: string) => {
-    setPromptOverride(node, value.slice(0, 4000));
+    setPromptOverride(node, value.slice(0, maxMutablePromptChars));
   };
 
   const handleRun = () => {
@@ -768,6 +900,10 @@ export function LiveStudio() {
     void downloadWorkspaceZip();
   };
 
+  const handleResetWorkspace = () => {
+    void resetWorkspaceSession().then(() => Promise.all([fetchFiles(), fetchTree()]));
+  };
+
   const sevColor: Record<string, string> = {
     info:    "rgba(226,232,240,0.5)",
     success: "#34d399",
@@ -790,6 +926,18 @@ export function LiveStudio() {
     coder: activityByNodeId.coder ?? 0,
   };
   const keyIsSet = apiKey.length > 0;
+  const activeIteration = useMemo(() => {
+    if (!activeNodeId) {
+      return null;
+    }
+    for (let index = logs.length - 1; index >= 0; index -= 1) {
+      const log = logs[index];
+      if (log.node === activeNodeId && typeof log.iteration === "number") {
+        return log.iteration;
+      }
+    }
+    return null;
+  }, [activeNodeId, logs]);
 
   return (
     <div style={{ height: "calc(100vh - 64px)", display: "flex", flexDirection: "column", overflow: "hidden", fontFamily: "'JetBrains Mono', monospace" }}>
@@ -896,6 +1044,37 @@ export function LiveStudio() {
           <Key size={12} />
           <span className="hidden sm:inline">{keyIsSet ? "Key set" : "Add key"}</span>
         </button>
+
+        <button
+          onClick={handleResetWorkspace}
+          title="Reset ephemeral workspace session"
+          style={{
+            display: "flex", alignItems: "center", gap: 5,
+            padding: "7px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600,
+            color: "rgba(248,113,113,0.85)",
+            background: "rgba(248,113,113,0.08)",
+            border: "1px solid rgba(248,113,113,0.25)",
+            cursor: "pointer", flexShrink: 0,
+            transition: "all 0.2s",
+          }}
+        >
+          <RotateCcw size={12} />
+          <span className="hidden sm:inline">Reset Session</span>
+        </button>
+
+        <div
+          style={{
+            marginLeft: "auto",
+            fontSize: 10,
+            color: "rgba(226,232,240,0.35)",
+            fontFamily: "'JetBrains Mono', monospace",
+            textAlign: "right",
+            lineHeight: 1.4,
+          }}
+        >
+          <div>workspace: {workspaceId ?? "initializing..."}</div>
+          {workspaceExpiresAt && <div>expires: {new Date(workspaceExpiresAt).toLocaleTimeString()}</div>}
+        </div>
       </div>
 
       {/* ── Main panels ───────────────────────────────────────────── */}
@@ -1006,7 +1185,7 @@ export function LiveStudio() {
 
           {/* Tab switcher */}
           <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.06)", flexShrink: 0 }}>
-            {([["graph", <Activity size={11} />, "Graph & Logs"] as const, ["prompts", <SlidersHorizontal size={11} />, "Prompts"] as const]).map(([tab, icon, label]) => (
+            {([["graph", <Activity size={11} />, "Graph & Logs"] as const, ["prompts", <SlidersHorizontal size={11} />, "System Prompt"] as const]).map(([tab, icon, label]) => (
               <button
                 key={tab}
                 onClick={() => setRightTab(tab)}
@@ -1061,7 +1240,7 @@ export function LiveStudio() {
                   </AnimatePresence>
                   {activeNodeId && (
                     <div style={{ marginTop: 8, fontSize: 10, color: "rgba(226,232,240,0.45)", textAlign: "center" }}>
-                      Active node: {activeNodeId}
+                      Active node: {activeNodeId}{typeof activeIteration === "number" ? ` (iteration ${activeIteration})` : ""}
                     </div>
                   )}
                 </div>
@@ -1086,19 +1265,56 @@ export function LiveStudio() {
                     )}
                     {logs.map((log) => {
                       const severity = toSeverity(log.severity);
+                      const detailText = formatLogDetails(log.details);
+                      const metaParts = [
+                        typeof log.iteration === "number" ? `iteration=${log.iteration}` : null,
+                        typeof log.duration_ms === "number" ? `duration=${log.duration_ms}ms` : null,
+                        log.error_type ? `type=${log.error_type}` : null,
+                      ].filter(Boolean) as string[];
                       return (
                         <motion.div
                           key={log.id}
                           initial={{ opacity: 0, x: 4 }}
                           animate={{ opacity: 1, x: 0 }}
                           transition={{ duration: 0.18 }}
-                          style={{ padding: "4px 5px", borderRadius: 4, marginBottom: 2 }}
+                          style={{
+                            padding: "6px 7px",
+                            borderRadius: 6,
+                            marginBottom: 4,
+                            border:
+                              severity === "error"
+                                ? "1px solid rgba(248,113,113,0.2)"
+                                : "1px solid rgba(255,255,255,0.04)",
+                            background:
+                              severity === "error"
+                                ? "rgba(248,113,113,0.06)"
+                                : "rgba(255,255,255,0.015)",
+                          }}
                         >
                           <div style={{ display: "flex", gap: 5, alignItems: "flex-start" }}>
                             <span style={{ fontSize: 9, color: "rgba(226,232,240,0.18)", flexShrink: 0, paddingTop: 2 }}>{formatLogTime(log.timestamp)}</span>
                             <NodeBadge name={log.node ?? "system"} />
                             <span style={{ fontSize: 11, color: sevColor[severity], lineHeight: 1.5, flex: 1 }}>{log.message}</span>
                           </div>
+                          {(metaParts.length > 0 || detailText || log.hint) && (
+                            <div style={{ marginTop: 4, marginLeft: 60 }}>
+                              {metaParts.length > 0 && (
+                                <div style={{ fontSize: 10, color: "rgba(226,232,240,0.38)", lineHeight: 1.5 }}>
+                                  {metaParts.join(" | ")}
+                                </div>
+                              )}
+                              {detailText && (
+                                <div style={{ fontSize: 10, color: "rgba(226,232,240,0.3)", lineHeight: 1.5 }}>
+                                  {detailText}
+                                </div>
+                              )}
+                              {log.hint && (
+                                <div style={{ fontSize: 10, color: "#fbbf24", lineHeight: 1.5 }}>
+                                  hint: {log.hint}
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </motion.div>
                       );
                     })}
@@ -1123,7 +1339,13 @@ export function LiveStudio() {
                 transition={{ duration: 0.15 }}
                 style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}
               >
-                <PromptOverridePanel overrides={promptOverrides} onChange={handleOverrideChange} />
+                <PromptOverridePanel
+                  promptSchema={promptSchema?.nodes ?? null}
+                  immutableRules={immutableRules}
+                  maxMutableChars={maxMutablePromptChars}
+                  overrides={promptOverrides}
+                  onChange={handleOverrideChange}
+                />
               </motion.div>
             )}
           </AnimatePresence>
