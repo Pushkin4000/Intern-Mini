@@ -49,7 +49,7 @@ Attach these attributes to Figma-exported interactive elements:
 
 ## Zustand Source of Truth
 
-All global app data must come from `frontend/store/useAgentStore.ts`:
+All global app data must come from `frontend/src/app/store/useAgentStore.ts`:
 
 - `files`
 - `activeFilePath`
@@ -78,6 +78,13 @@ The store expects backend SSE payloads with:
 - `activity_by_node_id`
 
 These are already emitted by `/stream`.
+
+## Frontend Logic Paths
+
+- API client: `frontend/src/app/lib/api-client.ts`
+- SSE parser: `frontend/src/app/lib/sse.ts`
+- Global store: `frontend/src/app/store/useAgentStore.ts`
+- Main stitched screen: `frontend/src/app/pages/LiveStudio.tsx`
 
 ## Workspace API Endpoints Used by Frontend
 

@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import subprocess
-from typing import Tuple
-
 from langchain_core.tools import tool
 
 try:  # pragma: no cover - supports running as script
@@ -11,8 +8,6 @@ try:  # pragma: no cover - supports running as script
         WorkspaceValidationError,
         list_relative_files,
         read_text_file,
-        resolve_workspace_path,
-        workspace_root,
         write_text_file,
     )
 except ImportError:  # pragma: no cover
@@ -21,16 +16,8 @@ except ImportError:  # pragma: no cover
         WorkspaceValidationError,
         list_relative_files,
         read_text_file,
-        resolve_workspace_path,
-        workspace_root,
         write_text_file,
     )
-
-
-@tool
-def get_current_directory() -> str:
-    """Returns the directory where the generated project lives."""
-    return str(workspace_root())
 
 
 @tool
@@ -61,19 +48,3 @@ def list_files(directory: str = ".") -> str:
     except WorkspaceValidationError:
         return f"ERROR: {directory} is not a directory"
     return "\n".join(files) if files else "No files found."
-
-
-@tool
-def run_cmd(cmd: str, cwd: str = None, timeout: int = 30) -> Tuple[int, str, str]:
-    """Runs a shell command inside the 'generated_project' folder."""
-    cwd_dir = resolve_workspace_path(cwd, allow_root=True) if cwd else workspace_root()
-
-    res = subprocess.run(
-        cmd,
-        shell=True,
-        cwd=str(cwd_dir),
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    return res.returncode, res.stdout, res.stderr

@@ -242,7 +242,7 @@ async def astream_workflow(
         {"recursion_limit": recursion_limit},
         stream_mode=["debug", "messages", "updates"],
         print_mode=(),
-        debug=False,
+        debug=True,
         subgraphs=True,
     ):
         yield item

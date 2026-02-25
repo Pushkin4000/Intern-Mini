@@ -1,29 +1,33 @@
 {
-  "name": "transparent-agentic-ide-frontend",
-  "version": "0.1.0",
+  "name": "@figma/my-make-file",
   "private": true,
+  "version": "0.0.1",
+  "type": "module",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
-    "test": "vitest"
+    "build": "vite build",
+    "dev": "vite",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@monaco-editor/react": "^4.6.0",
-    "axios": "^1.8.1",
-    "next": "^14.2.24",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "reactflow": "^11.11.4",
-    "zustand": "^5.0.3"
+    "axios": "1.8.4",
+    "lucide-react": "0.487.0",
+    "motion": "12.23.24",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router": "7.13.0",
+    "zustand": "5.0.3"
   },
   "devDependencies": {
-    "@types/node": "^20.17.23",
-    "@types/react": "^18.3.20",
-    "@types/react-dom": "^18.3.6",
-    "jsdom": "^26.0.0",
-    "typescript": "^5.8.2",
-    "vitest": "^3.0.9"
+    "@tailwindcss/vite": "4.1.12",
+    "@vitejs/plugin-react": "4.7.0",
+    "jsdom": "26.1.0",
+    "tailwindcss": "4.1.12",
+    "vite": "6.3.5",
+    "vitest": "2.1.9"
+  },
+  "pnpm": {
+    "overrides": {
+      "vite": "6.3.5"
+    }
   }
 }

@@ -66,7 +66,7 @@ class GraphAstreamWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
         call_args, call_kwargs = fake_app.calls[0]
         self.assertEqual(call_kwargs.get("stream_mode"), ["debug", "messages", "updates"])
-        self.assertIs(call_kwargs.get("debug"), False)
+        self.assertIs(call_kwargs.get("debug"), True)
         self.assertIs(call_kwargs.get("subgraphs"), True)
 
         self.assertEqual(call_args[0]["user_prompt"], "Build app")

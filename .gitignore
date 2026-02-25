@@ -184,5 +184,7 @@ cython_debug/
 frontend/node_modules/
 frontend/.next/
 frontend/coverage/
+frontend/.npm-cache/
+frontend/.npm-cache2/
 tests/.tmp/
 tmp*/
