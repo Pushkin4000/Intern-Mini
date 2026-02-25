@@ -98,6 +98,35 @@ class GenerateValidationTests(unittest.TestCase):
         self.assertEqual(run_args[3], payload["mutable_prompt"])
         self.assertEqual(run_args[4], payload["prompt_overrides"])
 
+    def test_api_key_header_fallback_is_supported(self) -> None:
+        payload = {"user_prompt": "Build a todo app"}
+        headers = {"X-API-KEY": "header-key"}
+
+        with patch("agent.api.build_chat_model") as mock_build, patch(
+            "agent.api.run_workflow"
+        ) as mock_run:
+            mock_build.return_value = object()
+            mock_run.return_value = {"status": "DONE", "plan": None, "detailed_ins": None}
+
+            response = self.client.post("/generate", json=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(mock_build.called)
+        self.assertEqual(mock_build.call_args.kwargs["api_key"], "header-key")
+
+    def test_missing_api_key_body_and_header_returns_422(self) -> None:
+        payload = {"user_prompt": "Build a todo app"}
+
+        with patch("agent.api.build_chat_model") as mock_build, patch(
+            "agent.api.run_workflow"
+        ) as mock_run:
+            response = self.client.post("/generate", json=payload)
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["error"]["code"], "invalid_request")
+        mock_build.assert_not_called()
+        mock_run.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

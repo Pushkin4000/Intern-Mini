@@ -8,11 +8,11 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, Query
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 try:  # pragma: no cover - supports script execution
@@ -25,6 +25,7 @@ try:  # pragma: no cover - supports script execution
         prompt_schema,
     )
     from .state import Plan, TaskPlan
+    from . import workspace as workspace_service
 except ImportError:  # pragma: no cover
     from graph import astream_workflow, get_graph_schema, run_workflow
     from llm_factory import DEFAULT_GROQ_MODEL, PROVIDER_NAME, build_chat_model
@@ -35,6 +36,7 @@ except ImportError:  # pragma: no cover
         prompt_schema,
     )
     from state import Plan, TaskPlan
+    import workspace as workspace_service
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +53,7 @@ class ApiErrorEnvelope(BaseModel):
 
 class RunWorkflowRequest(BaseModel):
     user_prompt: str = Field(..., min_length=1)
-    api_key: str = Field(..., min_length=1)
+    api_key: str | None = Field(default=None, min_length=1)
     mutable_prompt: str | None = None
     prompt_overrides: dict[str, str] | None = None
     model: str | None = None
@@ -63,6 +65,36 @@ class RunWorkflowResponse(BaseModel):
     provider: str = PROVIDER_NAME
     plan: Plan | None = None
     task_plan: TaskPlan | None = None
+
+
+class WorkspaceTreeResponse(BaseModel):
+    root: str
+    nodes: list[dict[str, object]]
+
+
+class WorkspaceFilesResponse(BaseModel):
+    files: dict[str, str]
+    skipped_binary: list[str]
+
+
+class WorkspaceFileResponse(BaseModel):
+    path: str
+    content: str
+
+
+class WorkspaceFileWriteRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+    content: str
+
+
+class WorkspaceFolderCreateRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+
+
+class WorkspaceRenameRequest(BaseModel):
+    from_path: str = Field(..., min_length=1)
+    to_path: str = Field(..., min_length=1)
+    overwrite: bool = False
 
 
 NODE_IDS = ("planner", "architect", "coder")
@@ -342,6 +374,27 @@ def _validate_prompt_payload(payload: RunWorkflowRequest) -> None:
             )
 
 
+def _resolve_api_key(payload: RunWorkflowRequest, header_api_key: str | None) -> str:
+    body_token = (payload.api_key or "").strip()
+    header_token = (header_api_key or "").strip()
+    token = body_token or header_token
+    if token:
+        return token
+    raise ValueError("api_key is required in body or X-API-KEY header.")
+
+
+def _workspace_error_response(exc: Exception) -> JSONResponse:
+    if isinstance(exc, workspace_service.WorkspaceValidationError):
+        return _error_response(422, "workspace_validation_error", str(exc))
+    if isinstance(exc, workspace_service.WorkspaceBinaryFileError):
+        return _error_response(422, "workspace_binary_file", str(exc))
+    if isinstance(exc, FileNotFoundError):
+        return _error_response(404, "workspace_not_found", str(exc))
+    if isinstance(exc, workspace_service.WorkspaceConflictError):
+        return _error_response(409, "workspace_conflict", str(exc))
+    return _error_response(500, "workspace_error", str(exc))
+
+
 app = FastAPI(
     title="Intern Mini Agent API",
     description=(
@@ -386,6 +439,7 @@ def health() -> dict[str, str | int]:
         "provider": PROVIDER_NAME,
         "default_model": DEFAULT_GROQ_MODEL,
         "max_mutable_prompt_chars": MAX_MUTABLE_PROMPT_CHARS,
+        "max_editable_file_chars": workspace_service.MAX_EDITABLE_FILE_CHARS,
     }
 
 
@@ -406,14 +460,99 @@ def graph_schema() -> dict[str, object]:
     return get_graph_schema()
 
 
+@app.get("/workspace/tree", response_model=WorkspaceTreeResponse)
+def workspace_tree():
+    try:
+        return WorkspaceTreeResponse(
+            root="generated_project",
+            nodes=workspace_service.list_tree(),
+        )
+    except Exception as exc:  # pragma: no cover
+        return _workspace_error_response(exc)
+
+
+@app.get("/workspace/files", response_model=WorkspaceFilesResponse)
+def workspace_files():
+    try:
+        files, skipped_binary = workspace_service.list_flat_text_files()
+        return WorkspaceFilesResponse(files=files, skipped_binary=skipped_binary)
+    except Exception as exc:  # pragma: no cover
+        return _workspace_error_response(exc)
+
+
+@app.get("/workspace/file", response_model=WorkspaceFileResponse)
+def workspace_file(path: str = Query(..., min_length=1)):
+    try:
+        return WorkspaceFileResponse(path=path, content=workspace_service.read_text_file(path))
+    except Exception as exc:
+        return _workspace_error_response(exc)
+
+
+@app.put("/workspace/file", response_model=WorkspaceFileResponse)
+def workspace_file_write(payload: WorkspaceFileWriteRequest):
+    try:
+        relative = workspace_service.write_text_file(payload.path, payload.content)
+        return WorkspaceFileResponse(path=relative, content=payload.content)
+    except Exception as exc:
+        return _workspace_error_response(exc)
+
+
+@app.post("/workspace/folder")
+def workspace_folder_create(payload: WorkspaceFolderCreateRequest):
+    try:
+        created = workspace_service.create_folder(payload.path)
+        return {"path": created}
+    except Exception as exc:
+        return _workspace_error_response(exc)
+
+
+@app.post("/workspace/rename")
+def workspace_path_rename(payload: WorkspaceRenameRequest):
+    try:
+        renamed = workspace_service.rename_path(
+            payload.from_path,
+            payload.to_path,
+            overwrite=payload.overwrite,
+        )
+        return {"path": renamed}
+    except Exception as exc:
+        return _workspace_error_response(exc)
+
+
+@app.delete("/workspace/path")
+def workspace_path_delete(path: str = Query(..., min_length=1), recursive: bool = False):
+    try:
+        deleted = workspace_service.delete_path(path, recursive=recursive)
+        return {"path": deleted}
+    except Exception as exc:
+        return _workspace_error_response(exc)
+
+
+@app.get("/workspace/download")
+def workspace_download():
+    try:
+        payload = workspace_service.build_workspace_zip()
+    except Exception as exc:  # pragma: no cover
+        return _workspace_error_response(exc)
+    return Response(
+        content=payload,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="generated_project.zip"'},
+    )
+
+
 @app.post("/generate", response_model=RunWorkflowResponse)
 @app.post("/v1/workflows/run", response_model=RunWorkflowResponse)
-async def run_agent_workflow(payload: RunWorkflowRequest):
+async def run_agent_workflow(
+    payload: RunWorkflowRequest,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
     run_id = str(uuid4())
 
     try:
         _validate_prompt_payload(payload)
-        llm = build_chat_model(api_key=payload.api_key, model=payload.model)
+        api_key = _resolve_api_key(payload, x_api_key)
+        llm = build_chat_model(api_key=api_key, model=payload.model)
         result = await run_in_threadpool(
             run_workflow,
             payload.user_prompt,
@@ -439,12 +578,16 @@ async def run_agent_workflow(payload: RunWorkflowRequest):
 
 @app.post("/stream")
 @app.post("/v1/workflows/stream")
-async def stream_agent_workflow(payload: RunWorkflowRequest):
+async def stream_agent_workflow(
+    payload: RunWorkflowRequest,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
     run_id = str(uuid4())
 
     try:
         _validate_prompt_payload(payload)
-        llm = build_chat_model(api_key=payload.api_key, model=payload.model)
+        api_key = _resolve_api_key(payload, x_api_key)
+        llm = build_chat_model(api_key=api_key, model=payload.model)
     except ValueError as exc:
         return _error_response(422, "invalid_request", str(exc))
 
