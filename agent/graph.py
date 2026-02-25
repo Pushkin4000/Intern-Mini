@@ -184,20 +184,120 @@ def _coder_agent(
     return coder
 
 
-graph=StateGraph(dict)
-graph.add_node("planner",planner_agent)
-graph.add_node("architect",architect_agent)
-graph.add_node("coder",coder_agent)
-graph.add_edge(start_key="planner",end_key="architect")
-graph.add_edge(start_key="architect",end_key="coder")
-graph.add_conditional_edges(
-    "coder",
-    lambda s: "END" if s.get("status") == "DONE" else "coder",
-    {"END": END, "coder": "coder"}
-)
-graph.set_entry_point("planner")
-agent = graph.compile()
-if __name__ == "__main__":
-    result = agent.invoke({"user_prompt": " "},#Add your request here.
-                          {"recursion_limit": 100})
-    print("Final State:", result)
+def build_agent(
+    llm: BaseChatModel,
+    event_callback: EventCallback | None = None,
+):
+    graph = StateGraph(AgentState)
+    graph.add_node("planner", _planner_agent(llm, event_callback))
+    graph.add_node("architect", _architect_agent(llm, event_callback))
+    graph.add_node("coder", _coder_agent(llm, event_callback))
+
+    graph.add_edge(start_key="planner", end_key="architect")
+    graph.add_edge(start_key="architect", end_key="coder")
+    graph.add_conditional_edges(
+        "coder",
+        lambda state: "END" if state.get("status") == "DONE" else "coder",
+        {"END": END, "coder": "coder"},
+    )
+    graph.set_entry_point("planner")
+    return graph.compile()
+
+
+def run_workflow(
+    user_prompt: str,
+    llm: BaseChatModel,
+    recursion_limit: int = 100,
+    mutable_prompt: str | None = None,
+    prompt_overrides: dict[str, str] | None = None,
+    event_callback: EventCallback | None = None,
+) -> dict[str, Any]:
+    agent = build_agent(llm, event_callback=event_callback)
+    return agent.invoke(
+        {
+            "user_prompt": user_prompt,
+            "mutable_prompt": mutable_prompt,
+            "prompt_overrides": prompt_overrides or {},
+        },
+        {"recursion_limit": recursion_limit},
+    )
+
+
+async def astream_workflow(
+    user_prompt: str,
+    llm: BaseChatModel,
+    recursion_limit: int = 100,
+    mutable_prompt: str | None = None,
+    prompt_overrides: dict[str, str] | None = None,
+    event_callback: EventCallback | None = None,
+) -> AsyncIterator[Any]:
+    """Stream verbose LangGraph runtime data for a single workflow run."""
+    agent = build_agent(llm, event_callback=event_callback)
+    async for item in agent.astream(
+        {
+            "user_prompt": user_prompt,
+            "mutable_prompt": mutable_prompt,
+            "prompt_overrides": prompt_overrides or {},
+        },
+        {"recursion_limit": recursion_limit},
+        stream_mode=["debug", "messages", "updates"],
+        print_mode=(),
+        debug=True,
+        subgraphs=True,
+    ):
+        yield item
+
+
+def get_graph_schema() -> dict[str, Any]:
+    """Return a React Flow compatible schema for the agent graph."""
+    return {
+        "graph_id": "agent_mind_v1",
+        "nodes": [
+            {
+                "id": "planner",
+                "label": "Planner",
+                "type": "default",
+                "position": {"x": 120, "y": 160},
+                "data": {"role": "planning"},
+            },
+            {
+                "id": "architect",
+                "label": "Architect",
+                "type": "default",
+                "position": {"x": 420, "y": 160},
+                "data": {"role": "architecture"},
+            },
+            {
+                "id": "coder",
+                "label": "Coder",
+                "type": "default",
+                "position": {"x": 720, "y": 160},
+                "data": {"role": "coding"},
+            },
+        ],
+        "edges": [
+            {
+                "id": "edge-planner-architect",
+                "source": "planner",
+                "target": "architect",
+                "type": "smoothstep",
+                "animated": False,
+            },
+            {
+                "id": "edge-architect-coder",
+                "source": "architect",
+                "target": "coder",
+                "type": "smoothstep",
+                "animated": False,
+            },
+            {
+                "id": "edge-coder-loop",
+                "source": "coder",
+                "target": "coder",
+                "type": "smoothstep",
+                "animated": True,
+            },
+        ],
+        "state_model": ["idle", "active", "completed", "error"],
+        "activity_model": {"min": 0.0, "max": 1.0},
+    }
