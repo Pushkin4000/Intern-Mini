@@ -26,6 +26,11 @@ import {
   Info,
 } from "lucide-react";
 import type { NodeId, PromptNodeSchema, WorkspaceTreeNode } from "@/app/lib/api-client";
+import {
+  buildLockedPromptHeader,
+  composePromptEditorValue,
+  extractEditablePromptSuffix,
+} from "@/app/store/prompt-editor";
 import { useAgentStore } from "@/app/store/useAgentStore";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -67,6 +72,20 @@ function toFileNodes(nodes: WorkspaceTreeNode[]): FileNode[] {
     type: node.type === "directory" ? "folder" : "file",
     children: node.children ? toFileNodes(node.children) : undefined,
   }));
+}
+
+function countTreeFiles(nodes: WorkspaceTreeNode[]): number {
+  let total = 0;
+  for (const node of nodes) {
+    if (node.type === "file") {
+      total += 1;
+      continue;
+    }
+    if (node.children && node.children.length > 0) {
+      total += countTreeFiles(node.children);
+    }
+  }
+  return total;
 }
 
 function toNodeStatus(value: string | undefined): NodeStatus {
@@ -237,13 +256,18 @@ function GraphNode({
   label,
   status,
   color,
-  activityScore,
 }: {
   label: string;
   status: NodeStatus;
   color: string;
-  activityScore: number;
 }) {
+  const statusLabel: Record<NodeStatus, string> = {
+    idle: "idle",
+    running: "running",
+    done: "done",
+    error: "error",
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
       <motion.div
@@ -281,7 +305,7 @@ function GraphNode({
             fontWeight: 600,
           }}
         >
-          {status === "running" ? `${Math.round(activityScore * 100)}%` : status}
+          {statusLabel[status]}
         </span>
       </motion.div>
       <div
@@ -554,13 +578,26 @@ function PromptOverridePanel({
   onChange: (node: NodeId, value: string) => void;
 }) {
   const nodeKeys: NodeId[] = ["planner", "architect", "coder"];
-  const rulesText = immutableRules.length
-    ? immutableRules.map((rule) => `- ${rule}`).join("\n")
-    : "Loading immutable rules from backend policy...";
+  const [selectedNode, setSelectedNode] = useState<NodeId>("planner");
+  const cfg = NODE_UI_CONFIG[selectedNode];
+  const schemaNode = promptSchema?.[selectedNode];
+  const currentOverride = overrides[selectedNode] ?? "";
+  const defaultMutable = schemaNode?.default_mutable ?? "";
+  const editableValue = currentOverride || defaultMutable;
+  const isModified = currentOverride.trim().length > 0;
+  const lockedHeader = buildLockedPromptHeader(immutableRules, schemaNode?.immutable_prefix ?? "");
+  const editorValue = composePromptEditorValue(lockedHeader, editableValue);
+
+  const handleEditorChange = (nextEditorValue: string) => {
+    const editableSuffix = extractEditablePromptSuffix(nextEditorValue, lockedHeader);
+    if (editableSuffix === null) {
+      return;
+    }
+    onChange(selectedNode, editableSuffix);
+  };
 
   return (
     <div style={{ overflowY: "auto", flex: 1 }}>
-      {/* Header */}
       <div style={{ padding: "14px 16px 10px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
           <SlidersHorizontal size={12} color="#a78bfa" />
@@ -568,215 +605,130 @@ function PromptOverridePanel({
             System Prompt Editor
           </span>
         </div>
-        <p style={{ fontSize: 11, color: "rgba(226,232,240,0.35)", margin: 0, lineHeight: 1.6 }}>
-          Immutable system rules and node prefixes are read-only. Only the mutable body is editable and sent as <code>prompt_overrides</code>.
-        </p>
+        {/* <p style={{ fontSize: 11, color: "rgba(226,232,240,0.35)", margin: 0, lineHeight: 1.6 }}>
+          Select a node and edit only the section below the divider. Immutable system prompt content is visible but locked.
+        </p> */}
       </div>
 
-      <div style={{ padding: "10px 12px 0" }}>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 10, color: "rgba(226,232,240,0.35)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-            Global Immutable Rules
-          </div>
-          <textarea
-            value={rulesText}
-            readOnly
-            rows={Math.min(8, Math.max(3, immutableRules.length + 1))}
-            style={{
-              width: "100%",
-              padding: "10px 12px",
-              borderRadius: 8,
-              background: "rgba(255,255,255,0.02)",
-              border: "1px solid rgba(226,232,240,0.18)",
-              color: "rgba(226,232,240,0.65)",
-              fontSize: 10,
-              fontFamily: "'JetBrains Mono', monospace",
-              lineHeight: 1.6,
-              resize: "vertical",
-              outline: "none",
-              boxSizing: "border-box",
-            }}
-          />
-        </div>
-      </div>
-
-      {/* Node overrides */}
-      <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 14 }}>
-        {nodeKeys.map((nodeKey) => {
-          const cfg = NODE_UI_CONFIG[nodeKey];
-          const schemaNode = promptSchema?.[nodeKey];
-          const currentValue = overrides[nodeKey] ?? "";
-          const isModified = currentValue.trim() !== "";
-          const defaultMutable = schemaNode?.default_mutable ?? "";
-          const immutablePrefix =
-            schemaNode?.immutable_prefix ?? "Loading immutable prefix from /api/prompts...";
-          const effectiveMutable = currentValue.trim() ? currentValue : defaultMutable;
-          const effectivePreview = [
-            "GLOBAL IMMUTABLE RULES:",
-            rulesText,
-            "",
-            "NODE IMMUTABLE PREFIX:",
-            immutablePrefix,
-            "",
-            "MUTABLE LAYER:",
-            effectiveMutable || "[empty mutable body]",
-            "",
-            "RUNTIME CONTEXT:",
-            "{{context_block}}",
-          ].join("\n");
-
-          return (
-            <div key={nodeKey}>
-              {/* Node label */}
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <div
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: "50%",
-                      background: cfg.color,
-                      boxShadow: `0 0 6px ${cfg.color}88`,
-                    }}
-                  />
-                  <span
-                    style={{
-                      fontSize: 11,
-                      fontWeight: 700,
-                      color: cfg.color,
-                      fontFamily: "'JetBrains Mono', monospace",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.06em",
-                    }}
-                  >
-                    {cfg.label}
-                  </span>
-                  {isModified && (
-                    <span
-                      style={{
-                        fontSize: 9,
-                        padding: "1px 6px",
-                        borderRadius: 100,
-                        background: `${cfg.color}18`,
-                        color: cfg.color,
-                        fontFamily: "'JetBrains Mono', monospace",
-                        fontWeight: 600,
-                      }}
-                    >
-                      modified
-                    </span>
-                  )}
-                </div>
-                {currentValue.trim() !== "" && (
-                  <button
-                    onClick={() => onChange(nodeKey, "")}
-                    title="Reset to default"
-                    style={{
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      color: "rgba(226,232,240,0.3)",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 3,
-                      fontSize: 10,
-                      padding: "2px 4px",
-                      borderRadius: 4,
-                    }}
-                  >
-                    <RotateCcw size={10} />
-                    reset
-                  </button>
-                )}
-              </div>
-
-              <div style={{ fontSize: 10, color: "rgba(226,232,240,0.35)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                Immutable Prefix (Read-only)
-              </div>
-              <textarea
-                value={immutablePrefix}
-                readOnly
-                rows={4}
+      <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {nodeKeys.map((nodeKey) => {
+            const nodeCfg = NODE_UI_CONFIG[nodeKey];
+            const selected = selectedNode === nodeKey;
+            return (
+              <button
+                key={nodeKey}
+                onClick={() => setSelectedNode(nodeKey)}
                 style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  background: "rgba(255,255,255,0.02)",
-                  border: "1px solid rgba(226,232,240,0.18)",
-                  color: "rgba(226,232,240,0.65)",
-                  fontSize: 10,
-                  fontFamily: "'JetBrains Mono', monospace",
-                  lineHeight: 1.6,
-                  resize: "vertical",
-                  outline: "none",
-                  boxSizing: "border-box",
-                  marginBottom: 8,
-                }}
-              />
-
-              {/* Textarea */}
-              <div style={{ fontSize: 10, color: "rgba(226,232,240,0.35)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                Mutable Body (Editable)
-              </div>
-              <textarea
-                value={currentValue}
-                onChange={(e) => onChange(nodeKey, e.target.value)}
-                rows={4}
-                style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  background: isModified ? `${cfg.color}08` : "rgba(255,255,255,0.025)",
-                  border: `1px solid ${isModified ? `${cfg.color}30` : "rgba(255,255,255,0.07)"}`,
-                  color: "#c4ccd8",
+                  flex: 1,
+                  padding: "7px 0",
+                  borderRadius: 6,
+                  border: `1px solid ${selected ? `${nodeCfg.color}55` : "rgba(255,255,255,0.1)"}`,
+                  background: selected ? `${nodeCfg.color}18` : "rgba(255,255,255,0.03)",
+                  color: selected ? nodeCfg.color : "rgba(226,232,240,0.5)",
                   fontSize: 11,
+                  fontWeight: 700,
                   fontFamily: "'JetBrains Mono', monospace",
-                  lineHeight: 1.7,
-                  resize: "vertical",
-                  outline: "none",
-                  boxSizing: "border-box",
-                  transition: "border-color 0.2s, background 0.2s",
-                }}
-                placeholder={defaultMutable || cfg.placeholder}
-              />
-              <div
-                style={{
-                  fontSize: 10,
-                  color: currentValue.length > maxMutableChars ? "#f87171" : "rgba(226,232,240,0.2)",
-                  marginTop: 3,
-                  textAlign: "right",
+                  cursor: "pointer",
                 }}
               >
-                {currentValue.length} / {maxMutableChars} chars
-              </div>
+                {nodeCfg.label}
+              </button>
+            );
+          })}
+        </div>
 
-              <div style={{ fontSize: 10, color: "rgba(226,232,240,0.35)", marginTop: 8, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                Effective Prompt Preview
-              </div>
-              <textarea
-                value={effectivePreview}
-                readOnly
-                rows={6}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: "50%",
+                background: cfg.color,
+                boxShadow: `0 0 6px ${cfg.color}88`,
+              }}
+            />
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: cfg.color,
+                fontFamily: "'JetBrains Mono', monospace",
+                textTransform: "uppercase",
+                letterSpacing: "0.06em",
+              }}
+            >
+              {cfg.label}
+            </span>
+            {isModified && (
+              <span
                 style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  background: "rgba(255,255,255,0.02)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  color: "rgba(226,232,240,0.55)",
-                  fontSize: 10,
+                  fontSize: 9,
+                  padding: "1px 6px",
+                  borderRadius: 100,
+                  background: `${cfg.color}18`,
+                  color: cfg.color,
                   fontFamily: "'JetBrains Mono', monospace",
-                  lineHeight: 1.6,
-                  resize: "vertical",
-                  outline: "none",
-                  boxSizing: "border-box",
+                  fontWeight: 600,
                 }}
-              />
-            </div>
-          );
-        })}
+              >
+                override
+              </span>
+            )}
+          </div>
+          {isModified && (
+            <button
+              onClick={() => onChange(selectedNode, "")}
+              title="Reset to backend default mutable text"
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                color: "rgba(226,232,240,0.35)",
+                display: "flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: 10,
+                padding: "2px 4px",
+                borderRadius: 4,
+              }}
+            >
+              <RotateCcw size={10} />
+              reset
+            </button>
+          )}
+        </div>
 
-        {/* Info note */}
+        <textarea
+          value={editorValue}
+          onChange={(event) => handleEditorChange(event.target.value)}
+          rows={18}
+          style={{
+            width: "100%",
+            padding: "10px 12px",
+            borderRadius: 8,
+            background: "rgba(255,255,255,0.02)",
+            border: `1px solid ${isModified ? `${cfg.color}35` : "rgba(255,255,255,0.09)"}`,
+            color: "#c4ccd8",
+            fontSize: 11,
+            fontFamily: "'JetBrains Mono', monospace",
+            lineHeight: 1.65,
+            resize: "vertical",
+            outline: "none",
+            boxSizing: "border-box",
+          }}
+        />
+        <div
+          style={{
+            fontSize: 10,
+            color: editableValue.length > maxMutableChars ? "#f87171" : "rgba(226,232,240,0.3)",
+            textAlign: "right",
+          }}
+        >
+          {editableValue.length} / {maxMutableChars} chars
+        </div>
+
         <div
           style={{
             padding: "10px 12px",
@@ -786,9 +738,9 @@ function PromptOverridePanel({
           }}
         >
           <p style={{ fontSize: 10, color: "rgba(226,232,240,0.3)", margin: 0, lineHeight: 1.7 }}>
-            Overrides apply to the next run. Sent via{" "}
+            Locked text is read-only. Only text below the divider is sent via{" "}
             <code style={{ fontFamily: "'JetBrains Mono', monospace", color: "#a78bfa" }}>prompt_overrides</code>{" "}
-            in the request body. Max {maxMutableChars} characters per node. Immutable rules and prefix cannot be modified.
+            for <strong style={{ color: cfg.color }}>{cfg.label}</strong>. Max {maxMutableChars} characters.
           </p>
         </div>
       </div>
@@ -818,7 +770,6 @@ export function LiveStudio() {
   const isRunning = useAgentStore((state) => state.isGenerating);
   const promptOverrides = useAgentStore((state) => state.promptOverrides);
   const nodeStatusById = useAgentStore((state) => state.nodeStatusById);
-  const activityByNodeId = useAgentStore((state) => state.activityByNodeId);
   const promptSchema = useAgentStore((state) => state.promptSchema);
   const maxMutablePromptChars = useAgentStore((state) => state.maxMutablePromptChars);
   const immutableRules = useAgentStore((state) => state.immutableRules);
@@ -847,6 +798,18 @@ export function LiveStudio() {
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
+
+  useEffect(() => {
+    if (!isRunning) {
+      return;
+    }
+    void fetchTree();
+    const intervalId = window.setInterval(() => {
+      void fetchTree();
+    }, 1200);
+
+    return () => window.clearInterval(intervalId);
+  }, [fetchTree, isRunning]);
 
   useEffect(() => {
     if (!activeFile) {
@@ -913,17 +876,12 @@ export function LiveStudio() {
 
   const fileNodes = useMemo(() => toFileNodes(treeNodes), [treeNodes]);
   const hasRun = logs.some((log) => log.event === "run_complete");
-  const fileCount = Object.keys(files).length;
+  const fileCount = useMemo(() => countTreeFiles(treeNodes), [treeNodes]);
   const isDirty = activeFile ? editorContent !== (files[activeFile] ?? "") : false;
   const nodeStatuses = {
     planner: toNodeStatus(nodeStatusById.planner),
     architect: toNodeStatus(nodeStatusById.architect),
     coder: toNodeStatus(nodeStatusById.coder),
-  };
-  const activityScores = {
-    planner: activityByNodeId.planner ?? 0,
-    architect: activityByNodeId.architect ?? 0,
-    coder: activityByNodeId.coder ?? 0,
   };
   const keyIsSet = apiKey.length > 0;
   const activeIteration = useMemo(() => {
@@ -1222,11 +1180,11 @@ export function LiveStudio() {
                     <Activity size={9} /> Agent Graph
                   </div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2 }}>
-                    <GraphNode label="Planner"   status={nodeStatuses.planner}   color="#a78bfa" activityScore={activityScores.planner} />
+                    <GraphNode label="Planner"   status={nodeStatuses.planner}   color="#a78bfa" />
                     <div style={{ flex: 1, height: 2, background: nodeStatuses.planner   === "done" ? "linear-gradient(90deg,#a78bfa,#06b6d4)" : "rgba(255,255,255,0.06)", borderRadius: 1, transition: "background 0.5s" }} />
-                    <GraphNode label="Architect" status={nodeStatuses.architect} color="#06b6d4" activityScore={activityScores.architect} />
+                    <GraphNode label="Architect" status={nodeStatuses.architect} color="#06b6d4" />
                     <div style={{ flex: 1, height: 2, background: nodeStatuses.architect === "done" ? "linear-gradient(90deg,#06b6d4,#34d399)" : "rgba(255,255,255,0.06)", borderRadius: 1, transition: "background 0.5s" }} />
-                    <GraphNode label="Coder"     status={nodeStatuses.coder}     color="#34d399" activityScore={activityScores.coder} />
+                    <GraphNode label="Coder"     status={nodeStatuses.coder}     color="#34d399" />
                   </div>
                   <AnimatePresence>
                     {hasRun && (
@@ -1234,7 +1192,7 @@ export function LiveStudio() {
                         initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                         style={{ marginTop: 12, padding: "7px 12px", borderRadius: 6, background: "rgba(52,211,153,0.07)", border: "1px solid rgba(52,211,153,0.18)", fontSize: 11, color: "#34d399", textAlign: "center" }}
                       >
-                        Complete - {fileCount} text file(s) in workspace
+                        Completed, please download using ZIP button - {fileCount} file(s) in workspace
                       </motion.div>
                     )}
                   </AnimatePresence>

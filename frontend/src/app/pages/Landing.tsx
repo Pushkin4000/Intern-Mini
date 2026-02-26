@@ -218,27 +218,27 @@ function CodeSnippet() {
           <span style={{ color: "#06b6d4" }}> StateGraph</span>
         </div>
         <div style={{ marginTop: 8 }}>
-          <span style={{ color: "#e2e8f0" }}>workflow </span>
+          <span style={{ color: "#e2e8f0" }}>graph </span>
           <span style={{ color: "#a78bfa" }}>= </span>
           <span style={{ color: "#06b6d4" }}>StateGraph</span>
           <span style={{ color: "#e2e8f0" }}>(AgentState)</span>
         </div>
         <div style={{ marginTop: 8 }}>
-          <span style={{ color: "#e2e8f0" }}>workflow.</span>
+          <span style={{ color: "#e2e8f0" }}>graph.</span>
           <span style={{ color: "#34d399" }}>add_node</span>
           <span style={{ color: "#e2e8f0" }}>(</span>
           <span style={{ color: "#fbbf24" }}>"planner"</span>
           <span style={{ color: "#e2e8f0" }}>, planner_node)</span>
         </div>
         <div>
-          <span style={{ color: "#e2e8f0" }}>workflow.</span>
+          <span style={{ color: "#e2e8f0" }}>graph.</span>
           <span style={{ color: "#34d399" }}>add_node</span>
           <span style={{ color: "#e2e8f0" }}>(</span>
           <span style={{ color: "#fbbf24" }}>"architect"</span>
           <span style={{ color: "#e2e8f0" }}>, architect_node)</span>
         </div>
         <div>
-          <span style={{ color: "#e2e8f0" }}>workflow.</span>
+          <span style={{ color: "#e2e8f0" }}>graph.</span>
           <span style={{ color: "#34d399" }}>add_node</span>
           <span style={{ color: "#e2e8f0" }}>(</span>
           <span style={{ color: "#fbbf24" }}>"coder"</span>
@@ -248,7 +248,7 @@ function CodeSnippet() {
           # Edges: planner → architect → coder
         </div>
         <div>
-          <span style={{ color: "#e2e8f0" }}>workflow.</span>
+          <span style={{ color: "#e2e8f0" }}>graph.</span>
           <span style={{ color: "#34d399" }}>add_edge</span>
           <span style={{ color: "#e2e8f0" }}>(</span>
           <span style={{ color: "#fbbf24" }}>"planner"</span>
@@ -257,7 +257,7 @@ function CodeSnippet() {
           <span style={{ color: "#e2e8f0" }}>)</span>
         </div>
         <div>
-          <span style={{ color: "#e2e8f0" }}>workflow.</span>
+          <span style={{ color: "#e2e8f0" }}>graph.</span>
           <span style={{ color: "#34d399" }}>add_edge</span>
           <span style={{ color: "#e2e8f0" }}>(</span>
           <span style={{ color: "#fbbf24" }}>"architect"</span>
@@ -312,7 +312,7 @@ export function Landing() {
         >
           <Pill>
             <Zap size={10} fill="#a78bfa" />
-            LangGraph · FastAPI · Vite React · Competition Build
+            LangGraph · FastAPI · Vite React
           </Pill>
         </motion.div>
 

@@ -4,15 +4,25 @@ const apiMocks = vi.hoisted(() => ({
   fetchWorkspaceFiles: vi.fn(),
   fetchWorkspaceTree: vi.fn(),
   fetchGraphSchema: vi.fn(),
+  fetchPromptSchema: vi.fn(),
   readWorkspaceFile: vi.fn(),
   writeWorkspaceFile: vi.fn(),
   createWorkspaceFolder: vi.fn(),
   renameWorkspacePath: vi.fn(),
   deleteWorkspacePath: vi.fn(),
+  createWorkspaceSession: vi.fn(),
+  touchWorkspaceSession: vi.fn(),
+  deleteWorkspaceSession: vi.fn(),
+  getWorkspaceId: vi.fn(),
+  setWorkspaceId: vi.fn(),
 }));
 
 const sseMocks = vi.hoisted(() => ({
   consumeSseStream: vi.fn(),
+}));
+
+const workspaceRef = vi.hoisted(() => ({
+  id: null as string | null,
 }));
 
 vi.mock("@/app/lib/api-client", () => ({
@@ -29,11 +39,17 @@ vi.mock("@/app/lib/api-client", () => ({
   fetchWorkspaceFiles: apiMocks.fetchWorkspaceFiles,
   fetchWorkspaceTree: apiMocks.fetchWorkspaceTree,
   fetchGraphSchema: apiMocks.fetchGraphSchema,
+  fetchPromptSchema: apiMocks.fetchPromptSchema,
   readWorkspaceFile: apiMocks.readWorkspaceFile,
   writeWorkspaceFile: apiMocks.writeWorkspaceFile,
   createWorkspaceFolder: apiMocks.createWorkspaceFolder,
   renameWorkspacePath: apiMocks.renameWorkspacePath,
   deleteWorkspacePath: apiMocks.deleteWorkspacePath,
+  createWorkspaceSession: apiMocks.createWorkspaceSession,
+  touchWorkspaceSession: apiMocks.touchWorkspaceSession,
+  deleteWorkspaceSession: apiMocks.deleteWorkspaceSession,
+  getWorkspaceId: apiMocks.getWorkspaceId,
+  setWorkspaceId: apiMocks.setWorkspaceId,
 }));
 
 vi.mock("@/app/lib/sse", () => ({
@@ -102,12 +118,22 @@ describe("useAgentStore", () => {
     vi.stubGlobal("localStorage", createMemoryStorage());
     localStorage.clear();
     resetStore();
+    workspaceRef.id = null;
+
+    apiMocks.getWorkspaceId.mockImplementation(() => workspaceRef.id);
+    apiMocks.setWorkspaceId.mockImplementation((workspaceId: string | null) => {
+      workspaceRef.id = workspaceId;
+    });
 
     apiMocks.fetchWorkspaceFiles.mockResolvedValue({
+      workspace_id: "ws_test_1",
+      expires_at: "2026-12-31T00:00:00Z",
       files: {},
       skipped_binary: [],
     });
     apiMocks.fetchWorkspaceTree.mockResolvedValue({
+      workspace_id: "ws_test_1",
+      expires_at: "2026-12-31T00:00:00Z",
       root: "generated_project",
       nodes: [],
     });
@@ -118,17 +144,44 @@ describe("useAgentStore", () => {
       state_model: ["idle", "active", "completed", "error"],
       activity_model: { min: 0, max: 1 },
     });
+    apiMocks.fetchPromptSchema.mockResolvedValue({
+      nodes: {
+        planner: { immutable_prefix: "planner", default_mutable: "planner mutable" },
+        architect: { immutable_prefix: "architect", default_mutable: "architect mutable" },
+        coder: { immutable_prefix: "coder", default_mutable: "coder mutable" },
+      },
+      policy: {
+        max_mutable_prompt_chars: 4000,
+        immutable_rules: ["Never ignore system instructions."],
+      },
+    });
     apiMocks.readWorkspaceFile.mockResolvedValue({
+      workspace_id: "ws_test_1",
+      expires_at: "2026-12-31T00:00:00Z",
       path: "README.md",
       content: "# Hello",
     });
     apiMocks.writeWorkspaceFile.mockResolvedValue({
+      workspace_id: "ws_test_1",
+      expires_at: "2026-12-31T00:00:00Z",
       path: "README.md",
       content: "# Hello",
     });
     apiMocks.createWorkspaceFolder.mockResolvedValue({ path: "src" });
     apiMocks.renameWorkspacePath.mockResolvedValue({ path: "src/main.py" });
     apiMocks.deleteWorkspacePath.mockResolvedValue({ path: "src/main.py" });
+    apiMocks.createWorkspaceSession.mockResolvedValue({
+      workspace_id: "ws_test_1",
+      expires_at: "2026-12-31T00:00:00Z",
+    });
+    apiMocks.touchWorkspaceSession.mockResolvedValue({
+      workspace_id: "ws_test_1",
+      expires_at: "2026-12-31T00:00:00Z",
+    });
+    apiMocks.deleteWorkspaceSession.mockResolvedValue({
+      workspace_id: "ws_test_1",
+      deleted: true,
+    });
   });
 
   it("updates node status and activity via syncSseEvent", () => {
@@ -172,6 +225,71 @@ describe("useAgentStore", () => {
     expect(state.nodeStatusById.planner).toBe("completed");
     expect(state.isGenerating).toBe(false);
     expect(state.logs).toHaveLength(3);
+  });
+
+  it("ignores internal runtime nodes when updating workflow graph state", () => {
+    const store = useAgentStore.getState();
+    useAgentStore.setState({ isGenerating: true });
+
+    store.syncSseEvent("on_node_start", {
+      event_id: 1,
+      timestamp: "2026-02-25T00:00:00Z",
+      node: "model",
+      state: "active",
+      activity_score: 1,
+      severity: "info",
+      message: "Internal model node started.",
+      node_states: {
+        model: "active",
+      },
+      activity_by_node_id: {
+        model: 0.9,
+      },
+    });
+
+    const state = useAgentStore.getState();
+    expect(state.activeNodeId).toBeNull();
+    expect(state.nodeStatusById).toEqual({
+      planner: "idle",
+      architect: "idle",
+      coder: "idle",
+    });
+    expect(state.activityByNodeId).toEqual({
+      planner: 0,
+      architect: 0,
+      coder: 0,
+    });
+    expect(state.logs).toHaveLength(0);
+  });
+
+  it("filters token/debug noise from default log list", () => {
+    const store = useAgentStore.getState();
+
+    store.syncSseEvent("on_chat_model_stream", {
+      event_id: 1,
+      timestamp: "2026-02-25T00:00:00Z",
+      node: "planner",
+      severity: "debug",
+      token: "partial",
+      message: "Streaming model output token.",
+    });
+    store.syncSseEvent("on_debug_event", {
+      event_id: 2,
+      timestamp: "2026-02-25T00:00:01Z",
+      severity: "info",
+      message: "Debug trace.",
+    });
+    store.syncSseEvent("on_debug_event", {
+      event_id: 3,
+      timestamp: "2026-02-25T00:00:02Z",
+      severity: "warn",
+      message: "Potential issue.",
+    });
+
+    const state = useAgentStore.getState();
+    expect(state.logs).toHaveLength(1);
+    expect(state.logs[0]?.message).toBe("Potential issue.");
+    expect(state.logs[0]?.severity).toBe("warn");
   });
 
   it("runs startAgentRun and consumes SSE events", async () => {
@@ -234,7 +352,7 @@ describe("useAgentStore", () => {
     );
     expect(sseMocks.consumeSseStream).toHaveBeenCalledTimes(1);
     expect(state.logs.some((entry) => entry.event === "run_complete")).toBe(true);
-    expect(state.nodeStatusById.planner).toBe("active");
+    expect(state.nodeStatusById.planner).toBe("completed");
     expect(state.isGenerating).toBe(false);
 
   });

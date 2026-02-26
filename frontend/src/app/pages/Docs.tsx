@@ -218,9 +218,9 @@ export function Docs() {
               </p>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {[
-                  { good: true,  text: '"A single FastAPI health check endpoint"' },
-                  { good: true,  text: '"A Python script that reads a CSV and prints summary stats"' },
-                  { good: true,  text: '"A minimal Express.js hello-world server with one route"' },
+                  { good: true,  text: '"Build a Calculator webapp."' },
+                  { good: true,  text: '"Create a To-do list app."' },
+                  { good: true,  text: '"Make a password strength tester."' },
                   { good: false, text: '"A full e-commerce platform with auth, payments, and admin dashboard"' },
                   { good: false, text: '"A complete full-stack SaaS app with auth, billing, analytics, and tests"' },
                 ].map((tip, i) => (

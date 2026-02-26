@@ -93,9 +93,14 @@ interface AgentStoreState {
 }
 
 const NODE_IDS: NodeId[] = ["planner", "architect", "coder"];
+const WORKFLOW_NODE_ID_SET = new Set<string>(NODE_IDS);
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function isWorkflowNode(nodeId: unknown): nodeId is NodeId {
+  return typeof nodeId === "string" && WORKFLOW_NODE_ID_SET.has(nodeId);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -197,20 +202,78 @@ function toObjectOrNull(value: unknown): Record<string, unknown> | null {
   return null;
 }
 
-function shouldLogTokenEvent(data: Record<string, unknown>): boolean {
+function deriveActiveNodeId(nodeStatusById: Record<string, NodeState>): string | null {
+  for (const nodeId of NODE_IDS) {
+    if (nodeStatusById[nodeId] === "active") {
+      return nodeId;
+    }
+  }
+  return null;
+}
+
+function shouldDisplayLogEvent(
+  eventName: string,
+  node: string | null,
+  severity: string
+): boolean {
+  if (severity === "warn" || severity === "error") {
+    return true;
+  }
+  if (eventName === "run_started" || eventName === "run_complete" || eventName === "error") {
+    return true;
+  }
+  if ((eventName === "on_node_start" || eventName === "on_node_end") && isWorkflowNode(node)) {
+    return true;
+  }
+  return false;
+}
+
+function buildDisplayLogMessage(
+  eventName: string,
+  node: string | null,
+  data: Record<string, unknown>
+): string {
   const details = toObjectOrNull(data.details);
-  const tokenIndex = toInteger(details?.token_index);
-  const token = typeof data.token === "string" ? data.token : "";
-  if (tokenIndex === null) {
-    return token.trim().length > 0;
+  const iteration = toInteger(data.iteration);
+  const iterationSuffix = typeof iteration === "number" ? ` (iteration ${iteration})` : "";
+  const nodeLabel = node ? `${node[0]?.toUpperCase() ?? ""}${node.slice(1)}` : "Workflow";
+  const rawMessage = typeof data.message === "string" ? data.message.trim() : "";
+
+  if (eventName === "run_started") {
+    return "Workflow run started.";
   }
-  if (tokenIndex % 25 === 0) {
-    return true;
+  if (eventName === "run_complete") {
+    return "Workflow finished successfully.";
   }
-  if (token.includes("\n")) {
-    return true;
+  if (eventName === "on_node_start" && node) {
+    return `${nodeLabel} started${iterationSuffix}.`;
   }
-  return /[.!?]$/.test(token.trim());
+  if (eventName === "on_node_end" && node) {
+    const summary = typeof details?.text === "string" ? details.text.trim() : "";
+    if (summary) {
+      return `${nodeLabel} completed${iterationSuffix}: ${summary}.`;
+    }
+    return `${nodeLabel} completed${iterationSuffix}.`;
+  }
+  if (rawMessage) {
+    return rawMessage;
+  }
+  return `${nodeLabel}: ${eventName}`;
+}
+
+function buildLogDetails(data: Record<string, unknown>): Record<string, unknown> | null {
+  const details = toObjectOrNull(data.details);
+  const raw = data.raw;
+  if (details && raw !== undefined) {
+    return { ...details, raw };
+  }
+  if (details) {
+    return details;
+  }
+  if (raw !== undefined) {
+    return { raw };
+  }
+  return null;
 }
 
 export const useAgentStore = create<AgentStoreState>((set, get) => ({
@@ -527,8 +590,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   },
   syncSseEvent: (eventName: string, data: Record<string, unknown>) => {
     const node = typeof data.node === "string" ? data.node : null;
+    const workflowNode = isWorkflowNode(node) ? node : null;
     const state = toNodeState(data.state);
     const score = toNumber(data.activity_score);
+    const severity = typeof data.severity === "string" ? data.severity : "info";
     const workspaceId = typeof data.workspace_id === "string" ? data.workspace_id : null;
     if (workspaceId) {
       setWorkspaceId(workspaceId);
@@ -541,6 +606,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       const nextActivity = { ...store.activityByNodeId };
 
       for (const [key, value] of Object.entries(emittedNodeStates)) {
+        if (!isWorkflowNode(key)) {
+          continue;
+        }
         const normalized = toNodeState(value);
         if (normalized) {
           nextNodeStatus[key] = normalized;
@@ -548,21 +616,38 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       }
 
       for (const [key, value] of Object.entries(emittedActivityByNode)) {
+        if (!isWorkflowNode(key)) {
+          continue;
+        }
         const normalized = toNumber(value);
         if (normalized !== null) {
           nextActivity[key] = normalized;
         }
       }
 
-      if (node && state) {
-        nextNodeStatus[node] = state;
+      if (workflowNode && state) {
+        nextNodeStatus[workflowNode] = state;
       }
-      if (node && score !== null) {
-        nextActivity[node] = score;
+      if (workflowNode && score !== null) {
+        nextActivity[workflowNode] = score;
       }
 
-      const skipTokenLog =
-        eventName === "on_chat_model_stream" && !shouldLogTokenEvent(data);
+      if (eventName === "run_complete") {
+        for (const nodeId of NODE_IDS) {
+          if (nextNodeStatus[nodeId] === "active") {
+            nextNodeStatus[nodeId] = "completed";
+          }
+        }
+      }
+      if (eventName === "error") {
+        const activeNodeId = deriveActiveNodeId(nextNodeStatus);
+        if (activeNodeId) {
+          nextNodeStatus[activeNodeId] = "error";
+          nextActivity[activeNodeId] = 0;
+        }
+      }
+
+      const includeLog = shouldDisplayLogEvent(eventName, node, severity);
 
       const nextLog: AgentLogEvent = {
         id:
@@ -576,14 +661,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         node,
         state,
         activity_score: score,
-        severity: typeof data.severity === "string" ? data.severity : "info",
-        message:
-          typeof data.message === "string"
-            ? data.message
-            : eventName === "on_chat_model_stream"
-              ? "Streaming model output token."
-              : eventName,
-        details: toObjectOrNull(data.details),
+        severity,
+        message: buildDisplayLogMessage(eventName, node, data),
+        details: buildLogDetails(data),
         hint: typeof data.hint === "string" ? data.hint : null,
         error_type: typeof data.error_type === "string" ? data.error_type : null,
         iteration: toInteger(data.iteration),
@@ -594,15 +674,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
 
       return {
         workspaceId: workspaceId ?? store.workspaceId,
-        logs: skipTokenLog ? store.logs : [...store.logs, nextLog],
-        activeNodeId:
-          eventName === "on_node_start" && node
-            ? node
-            : eventName === "run_complete" || eventName === "error"
-              ? null
-              : eventName === "on_node_end" && node === store.activeNodeId
-                ? null
-                : store.activeNodeId,
+        logs: includeLog ? [...store.logs, nextLog] : store.logs,
+        activeNodeId: deriveActiveNodeId(nextNodeStatus),
         nodeStatusById: nextNodeStatus,
         activityByNodeId: nextActivity,
         isGenerating:

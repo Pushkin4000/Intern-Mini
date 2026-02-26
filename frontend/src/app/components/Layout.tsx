@@ -76,8 +76,8 @@ export function Layout() {
                 letterSpacing: "-0.02em",
               }}
             >
-              agentide
-              <span style={{ color: "#7c3aed" }}>.sh</span>
+              Charito
+              <span style={{ color: "#7c3aed" }}></span>
             </span>
           </NavLink>
 
@@ -107,7 +107,7 @@ export function Layout() {
           {/* Right side */}
           <div className="hidden md:flex items-center gap-3">
             <a
-              href="https://github.com"
+              href="https://github.com/Pushkin4000/Intern-Mini/tree/Deploy-branch"
               target="_blank"
               rel="noopener noreferrer"
               style={{
@@ -237,11 +237,11 @@ export function Layout() {
                 color: "rgba(226,232,240,0.4)",
               }}
             >
-              agentide.sh — Transparent Agentic IDE
+              Charito — Transparent Agentic IDE
             </span>
           </div>
           <div style={{ fontSize: 12, color: "rgba(226,232,240,0.3)" }}>
-            Built for the Lovable Competition · LangGraph + FastAPI + Vite React
+            Built for enthusiasts · LangGraph + FastAPI + Vite React
           </div>
         </div>
       </footer>
