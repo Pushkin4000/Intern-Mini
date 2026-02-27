@@ -606,7 +606,7 @@ export function About() {
           <ArrowRight size={14} />
         </NavLink>
         <a
-          href="https://github.com"
+          href="https://github.com/Pushkin4000/Charito/tree/Deploy-branch"
           target="_blank"
           rel="noopener noreferrer"
           style={{
