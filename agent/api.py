@@ -1054,12 +1054,17 @@ async def run_agent_workflow(
         return _error_response(422, "invalid_request", str(exc))
     except Exception as exc:  # pragma: no cover
         logger.exception("Workflow failed run_id=%s", run_id)
+        classification = _classify_exception(exc)
         message = (
             str(exc)
             if SECURITY_CONFIG.expose_verbose_errors
             else "Workflow execution failed. Check server logs with the run_id for details."
         )
-        details = {"run_id": run_id}
+        details = {
+            "run_id": run_id,
+            "error_type": classification["error_type"],
+            "hint": classification["hint"],
+        }
         if SECURITY_CONFIG.expose_verbose_errors:
             details["exception_chain"] = _exception_chain(exc)
         return _error_response(500, "workflow_error", message, details)

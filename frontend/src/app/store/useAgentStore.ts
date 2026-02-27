@@ -177,6 +177,120 @@ function toErrorMessage(error: unknown): string {
   return String(error);
 }
 
+function normalizeErrorMessage(message: string): string {
+  let next = message.trim();
+  while (/^error:\s*/i.test(next)) {
+    next = next.replace(/^error:\s*/i, "").trim();
+  }
+  return next;
+}
+
+type RunErrorType =
+  | "connection_error"
+  | "rate_limit"
+  | "auth_error"
+  | "context_limit"
+  | "invalid_request"
+  | "unknown_error";
+
+interface RunErrorClassification {
+  message: string;
+  errorType: RunErrorType;
+  hint: string;
+  rawMessage: string;
+}
+
+function classifyRunError(error: unknown): RunErrorClassification {
+  const fallbackMessage = "Workflow failed during streaming.";
+  const errorObject = toObjectOrNull(error);
+  const details = toObjectOrNull(errorObject?.details);
+
+  const rawMessage = normalizeErrorMessage(toErrorMessage(error)) || fallbackMessage;
+  const explicitErrorType = typeof details?.error_type === "string" ? details.error_type : null;
+  const explicitHint =
+    typeof details?.hint === "string"
+      ? details.hint.trim()
+      : typeof errorObject?.hint === "string"
+        ? errorObject.hint.trim()
+        : "";
+
+  const lower = rawMessage.toLowerCase();
+  let errorType: RunErrorType;
+  if (explicitErrorType === "connection_error") {
+    errorType = "connection_error";
+  } else if (explicitErrorType === "rate_limit") {
+    errorType = "rate_limit";
+  } else if (explicitErrorType === "auth_error") {
+    errorType = "auth_error";
+  } else if (explicitErrorType === "context_limit") {
+    errorType = "context_limit";
+  } else if (explicitErrorType === "invalid_request") {
+    errorType = "invalid_request";
+  } else if (lower.includes("rate limit") || lower.includes(" 429") || lower.includes("status 429")) {
+    errorType = "rate_limit";
+  } else if (
+    lower.includes("api key") ||
+    lower.includes("authentication") ||
+    lower.includes("unauthorized") ||
+    lower.includes("forbidden") ||
+    lower.includes("status 401") ||
+    lower.includes("status 403")
+  ) {
+    errorType = "auth_error";
+  } else if (
+    lower.includes("connection refused") ||
+    lower.includes("connection error") ||
+    lower.includes("connecterror") ||
+    lower.includes("econnrefused") ||
+    lower.includes("timeout") ||
+    lower.includes("timed out") ||
+    lower.includes("failed to fetch") ||
+    lower.includes("network error") ||
+    lower.includes("winerror 10061")
+  ) {
+    errorType = "connection_error";
+  } else if (
+    lower.includes("context length") ||
+    lower.includes("too many tokens") ||
+    lower.includes("max tokens")
+  ) {
+    errorType = "context_limit";
+  } else if (
+    lower.includes("validation") ||
+    lower.includes("invalid request") ||
+    lower.includes("schema") ||
+    lower.includes("status 422")
+  ) {
+    errorType = "invalid_request";
+  } else {
+    errorType = "unknown_error";
+  }
+
+  const hintByType: Record<RunErrorType, string> = {
+    connection_error: "Network connection to provider failed. Verify network/provider access and retry.",
+    rate_limit: "Provider rate limit hit. Retry later or reduce prompt/output size.",
+    auth_error: "Authentication failed. Check your API key and try again.",
+    context_limit: "Prompt or context is too large. Reduce prompt size or mutable overrides.",
+    invalid_request: "Request validation failed. Review request inputs and retry.",
+    unknown_error: "Unexpected workflow error. Retry and inspect logs if it persists.",
+  };
+  const messageByType: Record<RunErrorType, string> = {
+    connection_error: "Provider connection failed.",
+    rate_limit: "Provider rate limit reached.",
+    auth_error: "Authentication failed.",
+    context_limit: "Prompt exceeds provider context limits.",
+    invalid_request: "Request validation failed.",
+    unknown_error: rawMessage,
+  };
+
+  return {
+    message: messageByType[errorType] || fallbackMessage,
+    errorType,
+    hint: explicitHint || hintByType[errorType],
+    rawMessage,
+  };
+}
+
 function isWorkspaceAuthError(error: unknown): boolean {
   const message = toErrorMessage(error).toLowerCase();
   return (
@@ -638,9 +752,25 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
 
       if (!response.ok) {
         const payload = await readErrorPayload(response);
-        throw new Error(
-          extractErrorMessage(payload, `Stream request failed with status ${response.status}`)
-        );
+        const message = extractErrorMessage(payload, `Stream request failed with status ${response.status}`);
+        const envelope = toObjectOrNull(payload);
+        const errorBody = toObjectOrNull(envelope?.error);
+        const details = toObjectOrNull(errorBody?.details);
+        const requestError = new Error(message) as Error & {
+          details?: Record<string, unknown>;
+          error_type?: string;
+          hint?: string;
+        };
+        if (details) {
+          requestError.details = details;
+          if (typeof details.error_type === "string") {
+            requestError.error_type = details.error_type;
+          }
+          if (typeof details.hint === "string") {
+            requestError.hint = details.hint;
+          }
+        }
+        throw requestError;
       }
 
       await consumeSseStream(response, (event) => {
@@ -649,6 +779,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
 
       await Promise.all([get().fetchFiles(), get().fetchTree()]);
     } catch (error) {
+      const classified = classifyRunError(error);
       get().syncSseEvent("error", {
         event_id: Date.now(),
         timestamp: nowIso(),
@@ -656,8 +787,14 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         state: "error",
         activity_score: 0,
         severity: "error",
-        message: `Streaming failed: ${String(error)}`,
-        raw: { error: String(error) }
+        error_type: classified.errorType,
+        hint: classified.hint,
+        message: classified.message,
+        details: {
+          error_type: classified.errorType,
+          hint: classified.hint,
+        },
+        raw: { source: "startAgentRun", error: classified.rawMessage }
       });
     } finally {
       set({ isGenerating: false });
@@ -732,6 +869,17 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         }
       }
 
+      const hint = typeof data.hint === "string" ? data.hint.trim() : "";
+      const errorType = typeof data.error_type === "string" ? data.error_type : null;
+      const errorMessageBase =
+        typeof data.message === "string" && data.message.trim()
+          ? data.message.trim()
+          : "Workflow failed.";
+      const errorMessageWithHint =
+        hint && !errorMessageBase.toLowerCase().includes(hint.toLowerCase())
+          ? `${errorMessageBase} ${hint}`
+          : errorMessageBase;
+
       const includeLog = shouldDisplayLogEvent(eventName, node, severity);
 
       const nextLog: AgentLogEvent = {
@@ -749,8 +897,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         severity,
         message: buildDisplayLogMessage(eventName, node, data),
         details: buildLogDetails(data),
-        hint: typeof data.hint === "string" ? data.hint : null,
-        error_type: typeof data.error_type === "string" ? data.error_type : null,
+        hint: hint || null,
+        error_type: errorType,
         iteration: toInteger(data.iteration),
         duration_ms: toInteger(data.duration_ms),
         raw: data.raw,
@@ -767,9 +915,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
           eventName === "run_complete" || eventName === "error" ? false : store.isGenerating,
         errorMessage:
           eventName === "error"
-            ? typeof data.message === "string"
-              ? data.message
-              : "Workflow failed."
+            ? errorMessageWithHint
             : store.errorMessage
       };
     });

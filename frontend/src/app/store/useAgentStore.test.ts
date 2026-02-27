@@ -357,6 +357,45 @@ describe("useAgentStore", () => {
 
   });
 
+  it("classifies stream request failures and surfaces actionable hints", async () => {
+    localStorage.setItem("X-API-KEY", "test-api-key");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: "workflow_error",
+            message: "Workflow execution failed.",
+            details: {
+              run_id: "run_123",
+              error_type: "connection_error",
+              hint: "Network connection to provider failed. Verify network/provider access and retry.",
+            },
+          },
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useAgentStore.getState().startAgentRun({
+      userPrompt: "Build a simple API.",
+    });
+
+    const state = useAgentStore.getState();
+    const latestLog = state.logs.at(-1);
+    expect(latestLog?.event).toBe("error");
+    expect(latestLog?.error_type).toBe("connection_error");
+    expect(latestLog?.hint).toContain("Network connection to provider failed");
+    expect(latestLog?.message).toBe("Provider connection failed.");
+    expect(state.errorMessage).toContain("Provider connection failed.");
+    expect(state.errorMessage).toContain("Network connection to provider failed");
+    expect(state.isGenerating).toBe(false);
+    expect(sseMocks.consumeSseStream).not.toHaveBeenCalled();
+  });
+
   it("handles secure workspace auth failures without noisy logs", async () => {
     apiMocks.fetchWorkspaceFiles.mockRejectedValueOnce(
       new Error("Workspace API authentication required. Provide a non-empty X-API-KEY header.")

@@ -11,6 +11,8 @@ import {
   Shield,
   Activity,
   Box,
+  Mail,
+  Linkedin,
 } from "lucide-react";
 
 const fadeUp = {
@@ -55,6 +57,17 @@ const techStack = [
   },
 ];
 
+const developerProfile = {
+  displayName: "Pushkin Ranjan",
+  role: "AI/ML Engineer | Agentic Systems Builder",
+  bio: "I design autonomous engineering systems focused on reliability and execution quality. Charito is an experiment in building a production-grade AI coding platform.",
+  contacts: {
+    email: "pushkinranjan4000@gmail.com",
+    linkedin: "https://linkedin.com/in/pushkin-ranjan",
+    github: "https://github.com/Pushkin4000",
+  },
+};
+
 export function About() {
   return (
     <div style={{ maxWidth: 900, margin: "0 auto", padding: "60px 24px" }}>
@@ -95,7 +108,7 @@ export function About() {
             marginBottom: 20,
           }}
         >
-          About This Project
+          About Charito
         </h1>
         <p
           style={{
@@ -105,9 +118,10 @@ export function About() {
             maxWidth: 600,
           }}
         >
-          A transparent agent workflow workspace where prompt layers, node lifecycle,
-          and generated files are visible during execution. The system is built around a
-          three-node LangGraph pipeline and a session-scoped workspace API.
+          Charito provides a transparent workflow workspace where
+          prompt layers, node lifecycle, and generated files stay visible during
+          execution. It is built around a three-node LangGraph pipeline and a
+          session-scoped workspace API.
         </p>
       </motion.div>
 
@@ -156,13 +170,14 @@ export function About() {
               letterSpacing: "-0.02em",
             }}
           >
-            Project Purpose
+            Platform Purpose
           </h3>
           <p style={{ fontSize: 14, color: "rgba(226,232,240,0.55)", lineHeight: 1.8 }}>
-            The goal is operational clarity over black-box behavior. Each workflow node
-            has guarded prompt layers, stream events are normalized into readable lifecycle
-            signals, and generated artifacts stay inside a validated workspace that can be
-            inspected, edited, and exported.
+            Charito is built for operational clarity over
+            black-box behavior. Each workflow node has guarded prompt layers, stream
+            events are normalized into readable lifecycle signals, and generated
+            artifacts stay inside a validated workspace that can be inspected,
+            edited, and exported.
           </p>
         </div>
       </motion.div>
@@ -358,8 +373,9 @@ export function About() {
           How It Works
         </h2>
         <p style={{ fontSize: 14, color: "rgba(226,232,240,0.55)", lineHeight: 1.8, marginBottom: 24 }}>
-          The user submits a prompt. The LangGraph workflow runs three nodes in
-          sequence, then the coder iterates file-by-file until completion:
+          In Charito, a user submits a prompt. The LangGraph
+          workflow runs three nodes in sequence, then the coder iterates
+          file-by-file until completion:
         </p>
 
         <div style={{ position: "relative" }}>
@@ -368,7 +384,7 @@ export function About() {
               step: "01",
               node: "Planner",
               color: "#a78bfa",
-              desc: "Builds a structured project plan with app summary, feature list, and initial file targets.",
+              desc: "Builds a structured execution plan with app summary, feature list, and initial file targets.",
             },
             {
               step: "02",
@@ -445,6 +461,114 @@ export function About() {
               </div>
             </div>
           ))}
+        </div>
+      </motion.section>
+
+      {/* Developer profile */}
+      <motion.section
+        variants={fadeUp}
+        custom={0}
+        initial="hidden"
+        whileInView="visible"
+        viewport={{ once: true }}
+        style={{ marginBottom: 56 }}
+      >
+        <h2
+          style={{
+            fontSize: 24,
+            fontWeight: 700,
+            color: "#f1f5f9",
+            letterSpacing: "-0.03em",
+            marginBottom: 16,
+          }}
+        >
+          About the Developer
+        </h2>
+        <div
+          style={{
+            padding: "22px 24px",
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,0.08)",
+            background: "rgba(255,255,255,0.02)",
+          }}
+        >
+          <div style={{ fontSize: 17, fontWeight: 700, color: "#f1f5f9", marginBottom: 4 }}>
+            {developerProfile.displayName}
+          </div>
+          <div
+            style={{
+              fontSize: 12,
+              fontFamily: "'JetBrains Mono', monospace",
+              color: "#a78bfa",
+              marginBottom: 12,
+            }}
+          >
+            {developerProfile.role}
+          </div>
+          <p style={{ fontSize: 13, color: "rgba(226,232,240,0.55)", lineHeight: 1.8, marginBottom: 14 }}>
+            {developerProfile.bio}
+          </p>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <a
+              href={`mailto:${developerProfile.contacts.email}`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "6px 10px",
+                borderRadius: 6,
+                fontSize: 12,
+                color: "rgba(226,232,240,0.78)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                background: "rgba(255,255,255,0.02)",
+                textDecoration: "none",
+              }}
+            >
+              <Mail size={13} />
+              {developerProfile.contacts.email}
+            </a>
+            <a
+              href={developerProfile.contacts.linkedin}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "6px 10px",
+                borderRadius: 6,
+                fontSize: 12,
+                color: "rgba(226,232,240,0.78)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                background: "rgba(255,255,255,0.02)",
+                textDecoration: "none",
+              }}
+            >
+              <Linkedin size={13} />
+              LinkedIn
+            </a>
+            <a
+              href={developerProfile.contacts.github}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "6px 10px",
+                borderRadius: 6,
+                fontSize: 12,
+                color: "rgba(226,232,240,0.78)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                background: "rgba(255,255,255,0.02)",
+                textDecoration: "none",
+              }}
+            >
+              <Github size={13} />
+              GitHub
+            </a>
+          </div>
         </div>
       </motion.section>
 
@@ -525,4 +649,3 @@ export function About() {
     </div>
   );
 }
-

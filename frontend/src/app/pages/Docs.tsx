@@ -144,17 +144,19 @@ export function Docs() {
             <Layers size={11} /> Overview
           </div>
           <h1 style={{ fontSize: 32, fontWeight: 700, color: "#f1f5f9", letterSpacing: "-0.03em", marginBottom: 16 }}>
-            Transparent Agent Workflow Runtime
+            Charito Docs
           </h1>
           <p style={{ fontSize: 14, color: "rgba(226,232,240,0.55)", lineHeight: 1.8, marginBottom: 16 }}>
-            This project combines a FastAPI backend and a Vite React frontend to run a
-            three-node LangGraph workflow: planner -&gt; architect -&gt; coder. The coder node
-            loops through architect-produced implementation steps until status is DONE.
+            Charito, an Agentic Coding Platform, combines a FastAPI backend and a Vite React
+            frontend to run a three-node LangGraph workflow: planner -&gt; architect
+            -&gt; coder. The coder node loops through architect-produced
+            implementation steps until status is DONE.
           </p>
           <p style={{ fontSize: 14, color: "rgba(226,232,240,0.55)", lineHeight: 1.8 }}>
             Prompt composition, graph orchestration, stream normalization, and workspace
-            APIs are all inspectable in code. Live Studio consumes the SSE event stream to
-            render node state, filtered logs, and generated files in real time.
+            APIs are all inspectable in code. In Charito, Live
+            Studio consumes the SSE event stream to render node state, filtered logs,
+            and generated files in real time.
           </p>
         </motion.section>
 
@@ -172,13 +174,12 @@ export function Docs() {
             <ShieldCheck size={20} color="#34d399" style={{ flexShrink: 0, marginTop: 2 }} />
             <div>
               <p style={{ fontSize: 14, fontWeight: 700, color: "#34d399", margin: "0 0 6px" }}>
-                Key handling in this project
+                Key handling in Charito
               </p>
               <p style={{ fontSize: 13, color: "rgba(52,211,153,0.75)", margin: 0, lineHeight: 1.7 }}>
-                In Live Studio, the key is stored in browser `sessionStorage` by default
-                (with optional persistent local storage in remember mode). Requests send it
-                to the backend, where it is used to instantiate the chat model for that run.
-                The workspace/session services do not persist API keys.
+                In Live Studio, the key is stored in browser `sessionStorage` by default.
+                Requests send it to the backend, where it is used to instantiate the chat model for that run.
+                The workspace/session services DO NOT PERSIST API keys.
               </p>
             </div>
           </div>
@@ -190,11 +191,11 @@ export function Docs() {
                 Rate limits still apply
               </p>
               <p style={{ fontSize: 13, color: "rgba(251,191,36,0.75)", margin: "0 0 8px", lineHeight: 1.7 }}>
-                Complex prompts can exceed free-tier RPM/TPM quotas. The workflow performs
+                Complex prompts can exceed free-tier token quotas. The workflow performs
                 multiple model calls and may stream large outputs during generation.
               </p>
               <p style={{ fontSize: 13, color: "rgba(251,191,36,0.75)", margin: 0, lineHeight: 1.7 }}>
-                If you receive `429` rate limit errors, retry after cooldown with a smaller,
+                If you receive rate limit errors, retry after cooldown with a smaller, simpler and
                 more focused prompt.
               </p>
             </div>
@@ -360,7 +361,6 @@ curl -X POST http://localhost:8000/generate \\
             directory. Session IDs can come from query params, request body, or
             <code style={{ fontFamily: "'JetBrains Mono', monospace", color: "#06b6d4", fontSize: 13 }}> X-Workspace-ID</code> header.
             Absolute paths, drive-qualified paths, and traversal escapes are blocked.
-            Max editable file content is 400000 characters.
           </p>
           <EndpointRow method="GET" path="/workspace/tree" desc="Returns hierarchical nodes for the active workspace session." />
           <EndpointRow method="GET" path="/workspace/files" desc="Returns flat UTF-8 files map and skipped_binary list." />

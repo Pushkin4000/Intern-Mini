@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Outlet, NavLink, useLocation } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
-import { Menu, X, Zap, Github, ExternalLink } from "lucide-react";
+import { Menu, X, Zap, Github } from "lucide-react";
 
 export function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -53,31 +53,17 @@ export function Layout() {
       >
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           {/* Logo */}
-          <NavLink to="/" className="flex items-center gap-2 group">
-            <div
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 8,
-                background: "linear-gradient(135deg, #7c3aed, #06b6d4)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Zap size={16} color="white" fill="white" />
-            </div>
+          <NavLink to="/" className="flex items-center group">
             <span
               style={{
-                fontFamily: "'JetBrains Mono', monospace",
+                fontFamily: "'Sora', 'Inter', sans-serif",
                 fontSize: 15,
                 fontWeight: 600,
                 color: "#e2e8f0",
-                letterSpacing: "-0.02em",
+                letterSpacing: "-0.015em",
               }}
             >
               Charito
-              <span style={{ color: "#7c3aed" }}></span>
             </span>
           </NavLink>
 
@@ -217,31 +203,28 @@ export function Layout() {
       >
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
-            <div
-              style={{
-                width: 24,
-                height: 24,
-                borderRadius: 6,
-                background: "linear-gradient(135deg, #7c3aed, #06b6d4)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Zap size={12} color="white" fill="white" />
-            </div>
             <span
               style={{
-                fontFamily: "'JetBrains Mono', monospace",
+                fontFamily: "'Sora', 'Inter', sans-serif",
                 fontSize: 13,
+                fontWeight: 600,
+                color: "rgba(226,232,240,0.78)",
+                letterSpacing: "-0.015em",
+              }}
+            >
+              Charito
+            </span>
+            <span
+              style={{
+                fontSize: 12,
                 color: "rgba(226,232,240,0.4)",
               }}
             >
-              Charito — Transparent Agentic IDE
+              | Agentic Coding Platform
             </span>
           </div>
           <div style={{ fontSize: 12, color: "rgba(226,232,240,0.3)" }}>
-            Built for enthusiasts · LangGraph + FastAPI + Vite React
+            Built with LangGraph, FastAPI, and Vite React
           </div>
         </div>
       </footer>

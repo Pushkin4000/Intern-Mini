@@ -312,7 +312,7 @@ export function Landing() {
         >
           <Pill>
             <Zap size={10} fill="#a78bfa" />
-            LangGraph | FastAPI | Vite React
+            Agentic Coding Platform | LangGraph | FastAPI
           </Pill>
         </motion.div>
 
@@ -331,7 +331,7 @@ export function Landing() {
             marginBottom: 24,
           }}
         >
-          A{" "}
+          The{" "}
           <span
             style={{
               background: "linear-gradient(135deg, #a78bfa, #06b6d4)",
@@ -339,9 +339,9 @@ export function Landing() {
               WebkitTextFillColor: "transparent",
             }}
           >
-            planner - architect - coder
+            Agentic Coding Platform
           </span>{" "}
-          workflow you can inspect live
+          for tinkerers
         </motion.h1>
 
         <motion.p
@@ -357,9 +357,9 @@ export function Landing() {
             marginBottom: 40,
           }}
         >
-          Planner builds a structured plan, Architect creates ordered
-          implementation steps, and Coder executes file-level tasks in a loop
-          until DONE with live graph, logs, and workspace updates.
+          Turn prompts into working code with planner -&gt; architect -&gt; coder
+          orchestration. Track every node live, keep prompt layers controlled,
+          and iterate files until the run reports DONE.
         </motion.p>
 
         <motion.div
@@ -426,10 +426,10 @@ export function Landing() {
           }}
         >
           {[
-            { val: "3", label: "Workflow Nodes" },
-            { val: "SSE", label: "Live Stream" },
-            { val: "CRUD", label: "Workspace APIs" },
-            { val: "Guarded", label: "Prompt Layers" },
+            { val: "3", label: "Specialized Nodes" },
+            { val: "Live", label: "Graph + Logs" },
+            { val: "CRUD", label: "Workspace Control" },
+            { val: "Guarded", label: "Prompt Policy" },
           ].map((s) => (
             <div key={s.label} style={{ textAlign: "center" }}>
               <div
@@ -472,7 +472,7 @@ export function Landing() {
               marginBottom: 12,
             }}
           >
-            Core Orchestration
+            Builder Workflow
           </p>
           <h2
             style={{
@@ -483,16 +483,16 @@ export function Landing() {
               lineHeight: 1.2,
             }}
           >
-            3-Node LangGraph Workflow
+            Plan, design, and code in one observable loop
           </h2>
         </motion.div>
 
         {/* Nodes */}
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "stretch" }}>
           <NodeCard
-            label="01 · PLANNER"
+            label="01 - PLANNER"
             icon={<Layers size={18} />}
-            desc="Produces a structured Plan from the request, including summary, features, and expected files."
+            desc="Turns your prompt into an executable plan with features and target files."
             color="#a78bfa"
             delay={0}
           />
@@ -507,9 +507,9 @@ export function Landing() {
             <ChevronRight size={20} />
           </div>
           <NodeCard
-            label="02 · ARCHITECT"
+            label="02 - ARCHITECT"
             icon={<Network size={18} />}
-            desc="Translates the Plan into ordered implementation_steps, usually one concrete task per target file path."
+            desc="Converts the plan into ordered implementation steps for each file path."
             color="#06b6d4"
             delay={1}
           />
@@ -524,9 +524,9 @@ export function Landing() {
             <ChevronRight size={20} />
           </div>
           <NodeCard
-            label="03 · CODER"
+            label="03 - CODER"
             icon={<Code2 size={18} />}
-            desc="Executes steps with read_file, list_files, and write_file, then loops until it returns DONE."
+            desc="Executes implementation steps for each file and loops until status is DONE."
             color="#34d399"
             delay={2}
           />
@@ -571,7 +571,7 @@ export function Landing() {
               marginBottom: 12,
             }}
           >
-            What Makes It Different
+            Why Builders Choose It
           </p>
           <h2
             style={{
@@ -581,7 +581,7 @@ export function Landing() {
               letterSpacing: "-0.03em",
             }}
           >
-            Built for Real Workflow Operations
+            Ship faster without black-box behavior
           </h2>
         </motion.div>
 
@@ -596,32 +596,32 @@ export function Landing() {
             {
               icon: <Shield size={18} />,
               title: "Guarded Prompt Layers",
-              desc: "Prompt composition stays explicit: immutable global rules, immutable node prefix, editable override layer, and runtime context.",
+              desc: "Keep behavior under control with editable system prompt overrides.",
             },
             {
               icon: <Activity size={18} />,
               title: "Real-Time SSE Lifecycle",
-              desc: "The /stream endpoint emits normalized lifecycle events so the UI can track node states, activity, and concise execution logs.",
+              desc: "Watch runs as they happen with live node states and concise progress logs.",
             },
             {
               icon: <Terminal size={18} />,
               title: "FastAPI Runtime APIs",
-              desc: "Backend routes cover schema inspection, workflow runs, streaming output, and workspace file and folder CRUD operations.",
+              desc: "Integrate quickly with API endpoints for quick operations.",
             },
             {
               icon: <GitBranch size={18} />,
               title: "Session Workspace",
-              desc: "Each run uses a session-scoped workspace with path validation, editable file limits, and ZIP export for handoff.",
+              desc: "Generate inside a session-scoped workspace with safe path validation, editable file operations, and ZIP export.",
             },
             {
               icon: <Download size={18} />,
               title: "Security by Environment",
-              desc: "Secure mode can require workspace auth and production responses reduce verbose error leakage while keeping server logs detailed.",
+              desc: "Enable env-gated secure mode for workspace auth and reduced verbose client errors in production.",
             },
             {
               icon: <Code2 size={18} />,
               title: "Live Studio Integration",
-              desc: "React + Zustand frontend wiring keeps prompts, graph state, logs, and file editing synchronized during active runs.",
+              desc: "Run, inspect, and edit from one React + Zustand studio with synchronized prompts, graph state, logs, and files.",
             },
           ].map((f, i) => (
             <FeatureCard key={f.title} {...f} delay={i * 0.1} />
@@ -659,7 +659,7 @@ export function Landing() {
                 marginBottom: 16,
               }}
             >
-              See it in action
+              Build faster with full visibility
             </h2>
             <p
               style={{
@@ -669,8 +669,9 @@ export function Landing() {
                 marginBottom: 32,
               }}
             >
-              Open the Live Studio to run the workflow, inspect graph and logs,
-              edit workspace files, and download the generated ZIP output.
+              Launch Live Studio to run Charito, follow
+              node-by-node progress, edit generated files, and export your
+              workspace as ZIP.
             </p>
             <NavLink
               to="/studio"

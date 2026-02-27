@@ -149,7 +149,32 @@ class GenerateValidationTests(unittest.TestCase):
         self.assertNotIn("sensitive-debug-message", payload["error"]["message"])
         details = payload["error"].get("details") or {}
         self.assertIn("run_id", details)
+        self.assertEqual(details.get("error_type"), "unknown_error")
+        self.assertTrue(isinstance(details.get("hint"), str))
         self.assertNotIn("exception_chain", details)
+
+    def test_generate_classifies_connection_failure(self) -> None:
+        payload = {
+            "user_prompt": "Build a todo app",
+            "api_key": "test-key",
+        }
+
+        with patch.object(api_module.SECURITY_CONFIG, "expose_verbose_errors", False), patch(
+            "agent.api.build_chat_model"
+        ) as mock_build, patch(
+            "agent.api.run_workflow",
+            side_effect=RuntimeError("connection refused by upstream"),
+        ):
+            mock_build.return_value = object()
+            response = self.client.post("/generate", json=payload)
+
+        self.assertEqual(response.status_code, 500)
+        body = response.json()
+        self.assertEqual(body["error"]["code"], "workflow_error")
+        details = body["error"].get("details") or {}
+        self.assertEqual(details.get("error_type"), "connection_error")
+        self.assertTrue(isinstance(details.get("hint"), str))
+        self.assertIn("run_id", details)
 
 
 if __name__ == "__main__":
