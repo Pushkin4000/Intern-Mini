@@ -15,6 +15,7 @@ const apiMocks = vi.hoisted(() => ({
   deleteWorkspaceSession: vi.fn(),
   getWorkspaceId: vi.fn(),
   setWorkspaceId: vi.fn(),
+  ensureApiBaseUrlConfigured: vi.fn(),
 }));
 
 const sseMocks = vi.hoisted(() => ({
@@ -50,6 +51,7 @@ vi.mock("@/app/lib/api-client", () => ({
   deleteWorkspaceSession: apiMocks.deleteWorkspaceSession,
   getWorkspaceId: apiMocks.getWorkspaceId,
   setWorkspaceId: apiMocks.setWorkspaceId,
+  ensureApiBaseUrlConfigured: apiMocks.ensureApiBaseUrlConfigured,
 }));
 
 vi.mock("@/app/lib/sse", () => ({

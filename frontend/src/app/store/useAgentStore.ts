@@ -6,6 +6,7 @@ import {
   createWorkspaceFolder,
   deleteWorkspaceSession,
   deleteWorkspacePath,
+  ensureApiBaseUrlConfigured,
   extractErrorMessage,
   fetchGraphSchema,
   fetchPromptSchema,
@@ -740,6 +741,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     });
 
     try {
+      ensureApiBaseUrlConfigured();
+
       const response = await fetch(`${API_BASE_URL}/stream`, {
         method: "POST",
         headers: {
@@ -921,6 +924,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     });
   },
   downloadWorkspaceZip: async () => {
+    ensureApiBaseUrlConfigured();
     const localApiKey = getStoredApiKey();
     if (!get().workspaceId) {
       await get().initWorkspaceSession();

@@ -95,12 +95,27 @@ interface ApiErrorEnvelope {
   detail?: unknown;
 }
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? "";
+const isLocalHost =
+  typeof window !== "undefined" &&
+  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+const isLocalRuntime = !import.meta.env.PROD || isLocalHost;
+const localDevApiBaseUrl = "http://localhost:8000";
+const missingApiBaseUrlMessage =
+  "API base URL is not configured. Set VITE_API_BASE_URL to your deployed backend URL.";
+
+export const API_BASE_URL = configuredApiBaseUrl || (isLocalRuntime ? localDevApiBaseUrl : "");
 let currentWorkspaceId: string | null = null;
 
 export const apiClient: AxiosInstance = axios.create({
   baseURL: API_BASE_URL
 });
+
+export function ensureApiBaseUrlConfigured(): void {
+  if (!API_BASE_URL) {
+    throw new Error(missingApiBaseUrlMessage);
+  }
+}
 
 export function setWorkspaceId(workspaceId: string | null) {
   currentWorkspaceId = workspaceId?.trim() || null;
@@ -140,6 +155,10 @@ export function extractErrorMessage(payload: unknown, fallback = "Request failed
 }
 
 apiClient.interceptors.request.use((config) => {
+  if (!API_BASE_URL) {
+    return Promise.reject(new Error(missingApiBaseUrlMessage));
+  }
+
   const key = getStoredApiKey();
 
   if (key) {
