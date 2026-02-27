@@ -357,6 +357,18 @@ describe("useAgentStore", () => {
 
   });
 
+  it("handles secure workspace auth failures without noisy logs", async () => {
+    apiMocks.fetchWorkspaceFiles.mockRejectedValueOnce(
+      new Error("Workspace API authentication required. Provide a non-empty X-API-KEY header.")
+    );
+
+    await useAgentStore.getState().fetchFiles();
+
+    const state = useAgentStore.getState();
+    expect(state.errorMessage).toContain("Workspace access requires an API key");
+    expect(state.logs).toHaveLength(0);
+  });
+
   it("records a descriptive error when workspace fetch fails", async () => {
     apiMocks.fetchWorkspaceFiles.mockRejectedValueOnce(new Error("workspace unavailable"));
 

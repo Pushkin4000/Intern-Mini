@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+import agent.api as api_module
 from agent.api import app
 
 
@@ -127,6 +128,15 @@ class WorkspaceApiTests(unittest.TestCase):
         delete_response = self.client.delete(f"/workspace/session/{workspace_id}")
         self.assertEqual(delete_response.status_code, 200)
         self.assertTrue(delete_response.json()["deleted"])
+
+    def test_workspace_requires_api_key_when_secure_mode_enabled(self) -> None:
+        with patch.object(api_module.SECURITY_CONFIG, "require_workspace_auth", True):
+            unauthorized = self.client.get("/workspace/tree")
+            self.assertEqual(unauthorized.status_code, 401)
+            self.assertEqual(unauthorized.json()["error"]["code"], "workspace_unauthorized")
+
+            authorized = self.client.get("/workspace/tree", headers={"X-API-KEY": "test-key"})
+            self.assertEqual(authorized.status_code, 200)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ import {
   type WorkspaceTreeNode,
   writeWorkspaceFile
 } from "@/app/lib/api-client";
+import { getStoredApiKey } from "@/app/lib/api-key-storage";
 import { consumeSseStream } from "@/app/lib/sse";
 
 type NodeState = "idle" | "active" | "completed" | "error";
@@ -138,15 +139,6 @@ function toInteger(value: unknown): number | null {
   return Number.isInteger(numeric) ? numeric : Math.round(numeric);
 }
 
-function getStoredApiKey(): string {
-  const key =
-    localStorage.getItem("X-API-KEY") ??
-    localStorage.getItem("groq_api_key") ??
-    localStorage.getItem("api_key") ??
-    "";
-  return key.trim();
-}
-
 function buildPromptOverrides(overrides: Record<NodeId, string>): Record<string, string> {
   const payload: Record<string, string> = {};
   for (const nodeId of NODE_IDS) {
@@ -176,6 +168,28 @@ function pushStoreError(set: (fn: (state: AgentStoreState) => Partial<AgentStore
       }
     ]
   }));
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return String(error);
+}
+
+function isWorkspaceAuthError(error: unknown): boolean {
+  const message = toErrorMessage(error).toLowerCase();
+  return (
+    message.includes("workspace_unauthorized") ||
+    message.includes("workspace api authentication required") ||
+    (message.includes("workspace") && message.includes("x-api-key"))
+  );
+}
+
+function setWorkspaceAuthBlocked(setState: (value: Partial<AgentStoreState>) => void): void {
+  setState({
+    errorMessage: "Workspace access requires an API key. Add your key to continue.",
+  });
 }
 
 async function readErrorPayload(response: Response): Promise<unknown> {
@@ -329,6 +343,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         errorMessage: null,
       });
     } catch (error) {
+      if (isWorkspaceAuthError(error)) {
+        setWorkspaceAuthBlocked(set);
+        return;
+      }
       pushStoreError(set, `Failed to initialize workspace session: ${String(error)}`);
     }
   },
@@ -352,6 +370,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         errorMessage: null,
       });
     } catch (error) {
+      if (isWorkspaceAuthError(error)) {
+        setWorkspaceAuthBlocked(set);
+        return;
+      }
       pushStoreError(set, `Failed to reset workspace session: ${String(error)}`);
     }
   },
@@ -359,6 +381,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     try {
       if (!get().workspaceId) {
         await get().initWorkspaceSession();
+        if (!get().workspaceId) {
+          return;
+        }
       }
       const response = await fetchWorkspaceFiles();
       const paths = Object.keys(response.files).sort();
@@ -377,6 +402,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         errorMessage: null
       }));
     } catch (error) {
+      if (isWorkspaceAuthError(error)) {
+        setWorkspaceAuthBlocked(set);
+        return;
+      }
       pushStoreError(set, `Failed to load workspace files: ${String(error)}`);
     }
   },
@@ -384,6 +413,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     try {
       if (!get().workspaceId) {
         await get().initWorkspaceSession();
+        if (!get().workspaceId) {
+          return;
+        }
       }
       const response = await fetchWorkspaceTree();
       setWorkspaceId(response.workspace_id);
@@ -394,6 +426,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         errorMessage: null,
       });
     } catch (error) {
+      if (isWorkspaceAuthError(error)) {
+        setWorkspaceAuthBlocked(set);
+        return;
+      }
       pushStoreError(set, `Failed to load workspace tree: ${String(error)}`);
     }
   },
@@ -422,6 +458,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     try {
       if (!get().workspaceId) {
         await get().initWorkspaceSession();
+        if (!get().workspaceId) {
+          return;
+        }
       }
       const response = await readWorkspaceFile(path);
       setWorkspaceId(response.workspace_id);
@@ -436,6 +475,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         errorMessage: null
       }));
     } catch (error) {
+      if (isWorkspaceAuthError(error)) {
+        setWorkspaceAuthBlocked(set);
+        return;
+      }
       pushStoreError(set, `Failed to read file '${path}': ${String(error)}`);
     }
   },
@@ -450,6 +493,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     try {
       if (!get().workspaceId) {
         await get().initWorkspaceSession();
+        if (!get().workspaceId) {
+          throw new Error("Workspace session is not available.");
+        }
       }
       const response = await writeWorkspaceFile(path, content);
       setWorkspaceId(response.workspace_id);
@@ -459,6 +505,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         errorMessage: null,
       });
     } catch (error) {
+      if (isWorkspaceAuthError(error)) {
+        setWorkspaceAuthBlocked(set);
+        throw error;
+      }
       pushStoreError(set, `Failed to save file '${path}': ${String(error)}`);
       throw error;
     }
@@ -467,11 +517,18 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     try {
       if (!get().workspaceId) {
         await get().initWorkspaceSession();
+        if (!get().workspaceId) {
+          return;
+        }
       }
       await createWorkspaceFolder(path);
       await Promise.all([get().fetchTree(), get().fetchFiles()]);
       set({ errorMessage: null });
     } catch (error) {
+      if (isWorkspaceAuthError(error)) {
+        setWorkspaceAuthBlocked(set);
+        return;
+      }
       pushStoreError(set, `Failed to create folder '${path}': ${String(error)}`);
     }
   },
@@ -479,6 +536,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     try {
       if (!get().workspaceId) {
         await get().initWorkspaceSession();
+        if (!get().workspaceId) {
+          return;
+        }
       }
       await renameWorkspacePath(fromPath, toPath, overwrite);
       await Promise.all([get().fetchTree(), get().fetchFiles()]);
@@ -487,6 +547,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       }
       set({ errorMessage: null });
     } catch (error) {
+      if (isWorkspaceAuthError(error)) {
+        setWorkspaceAuthBlocked(set);
+        return;
+      }
       pushStoreError(set, `Failed to rename '${fromPath}' to '${toPath}': ${String(error)}`);
     }
   },
@@ -494,6 +558,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     try {
       if (!get().workspaceId) {
         await get().initWorkspaceSession();
+        if (!get().workspaceId) {
+          return;
+        }
       }
       await deleteWorkspacePath(path, recursive);
       await Promise.all([get().fetchTree(), get().fetchFiles()]);
@@ -502,6 +569,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       }
       set({ errorMessage: null });
     } catch (error) {
+      if (isWorkspaceAuthError(error)) {
+        setWorkspaceAuthBlocked(set);
+        return;
+      }
       pushStoreError(set, `Failed to delete '${path}': ${String(error)}`);
     }
   },
@@ -514,12 +585,16 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
 
     const localApiKey = getStoredApiKey();
     if (!localApiKey) {
-      pushStoreError(set, "Missing API key. Set X-API-KEY in local storage before running.");
+      pushStoreError(set, "Missing API key. Add an API key in session storage or enable remember-key mode.");
       return;
     }
 
     if (!get().workspaceId) {
       await get().initWorkspaceSession();
+      if (!get().workspaceId) {
+        pushStoreError(set, "Workspace session is not available.");
+        return;
+      }
     }
     const workspaceId = get().workspaceId;
 
@@ -627,6 +702,16 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
 
       if (workflowNode && state) {
         nextNodeStatus[workflowNode] = state;
+        
+        // Auto-complete previous nodes
+        if (state === "active") {
+          if (workflowNode === "architect") {
+            if (nextNodeStatus["planner"] !== "error") nextNodeStatus["planner"] = "completed";
+          } else if (workflowNode === "coder") {
+            if (nextNodeStatus["planner"] !== "error") nextNodeStatus["planner"] = "completed";
+            if (nextNodeStatus["architect"] !== "error") nextNodeStatus["architect"] = "completed";
+          }
+        }
       }
       if (workflowNode && score !== null) {
         nextActivity[workflowNode] = score;
@@ -693,6 +778,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     const localApiKey = getStoredApiKey();
     if (!get().workspaceId) {
       await get().initWorkspaceSession();
+      if (!get().workspaceId) {
+        return;
+      }
     }
     const workspaceId = get().workspaceId;
     try {
@@ -718,6 +806,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       link.remove();
       URL.revokeObjectURL(url);
     } catch (error) {
+      if (isWorkspaceAuthError(error)) {
+        setWorkspaceAuthBlocked(set);
+        return;
+      }
       pushStoreError(set, `Failed to download workspace zip: ${String(error)}`);
     }
   },

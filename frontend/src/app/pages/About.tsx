@@ -27,30 +27,30 @@ const techStack = [
     category: "Backend",
     color: "#a78bfa",
     items: [
-      { name: "LangGraph", desc: "3-node stateful agent orchestration" },
-      { name: "FastAPI", desc: "Async Python REST + SSE streaming" },
-      { name: "Pydantic", desc: "State model validation throughout" },
-      { name: "LangChain", desc: "LLM integration and prompt management" },
+      { name: "LangGraph", desc: "Workflow graph: planner -> architect -> coder (coder loops until DONE)." },
+      { name: "FastAPI", desc: "REST + SSE endpoints for runs, schema, and workspace APIs." },
+      { name: "Pydantic", desc: "Structured models for plan, task plan, and runtime request/response payloads." },
+      { name: "LangChain + Groq", desc: "Chat model integration via langchain-groq with provider-configured model selection." },
     ],
   },
   {
     category: "Frontend",
     color: "#06b6d4",
     items: [
-      { name: "Vite + React Router", desc: "Frontend application runtime" },
-      { name: "Zustand", desc: "Global state — single source of truth" },
-      { name: "Live Studio Editor", desc: "Built-in file editing panel connected to workspace APIs" },
-      { name: "Active Graph Panel", desc: "Runtime node status and activity visualization" },
+      { name: "Vite + React Router", desc: "SPA routing and page composition for Home, Docs, Studio, and About." },
+      { name: "Zustand", desc: "Single source of truth for graph state, logs, workspace files, and prompt overrides." },
+      { name: "Live Studio Editor", desc: "Built-in editor and file tree backed by workspace read/write endpoints." },
+      { name: "Workflow Graph Panel", desc: "Planner/Architect/Coder status view driven by streaming SSE events." },
     ],
   },
   {
     category: "Infrastructure",
     color: "#34d399",
     items: [
-      { name: "SSE Streaming", desc: "Real-time event pipeline from backend" },
-      { name: "Workspace Sandbox", desc: "Safe path-validated CRUD layer" },
-      { name: "Pytest", desc: "39 tests across prompt, graph, workspace" },
-      { name: "ZIP Download", desc: "Full workspace export at any time" },
+      { name: "SSE Streaming", desc: "Normalized runtime events for lifecycle, debug, and incremental updates." },
+      { name: "Session Workspaces", desc: "Per-session temp workspace with path validation and TTL cleanup." },
+      { name: "Pytest Suite", desc: "Backend tests for prompt schema, graph execution, streaming, and workspace APIs." },
+      { name: "ZIP Export", desc: "Download the current workspace as generated_project.zip." },
     ],
   },
 ];
@@ -82,7 +82,7 @@ export function About() {
           }}
         >
           <Trophy size={11} />
-          Lovable Competition Entry
+          Implementation Scope
         </div>
 
         <h1
@@ -105,13 +105,13 @@ export function About() {
             maxWidth: 600,
           }}
         >
-          A fully transparent agentic IDE — where every prompt, every decision, and
-          every generated file is observable, auditable, and overridable. Built as a
-          competition entry against Lovable.
+          A transparent agent workflow workspace where prompt layers, node lifecycle,
+          and generated files are visible during execution. The system is built around a
+          three-node LangGraph pipeline and a session-scoped workspace API.
         </p>
       </motion.div>
 
-      {/* Competition context */}
+      {/* Project purpose */}
       <motion.div
         variants={fadeUp}
         custom={1}
@@ -156,14 +156,13 @@ export function About() {
               letterSpacing: "-0.02em",
             }}
           >
-            The Lovable Competition
+            Project Purpose
           </h3>
           <p style={{ fontSize: 14, color: "rgba(226,232,240,0.55)", lineHeight: 1.8 }}>
-            This project was built as a direct competition entry against Lovable — a
-            popular AI web app builder. The thesis: what if the AI coding tool was
-            completely transparent? No black box prompts, no opaque agent decisions.
-            Every system prompt is inspectable at runtime, every node's reasoning is
-            streamable, and the entire workflow is overridable via API.
+            The goal is operational clarity over black-box behavior. Each workflow node
+            has guarded prompt layers, stream events are normalized into readable lifecycle
+            signals, and generated artifacts stay inside a validated workspace that can be
+            inspected, edited, and exported.
           </p>
         </div>
       </motion.div>
@@ -199,25 +198,25 @@ export function About() {
             {
               icon: <Shield size={18} />,
               title: "Guarded Prompts",
-              desc: "Every node prompt has immutable rules + prefix that can never change, and a mutable body you can override at runtime.",
+              desc: "Planner, Architect, and Coder prompts combine immutable global rules, immutable node prefix, and mutable runtime override text.",
               color: "#a78bfa",
             },
             {
               icon: <Activity size={18} />,
-              title: "Full Observability",
-              desc: "Real-time SSE stream with node activity scores, severity levels, raw outputs, and state snapshots.",
+              title: "Workflow Observability",
+              desc: "SSE emits run_started, node start/end, debug events, and run_complete so the UI can render live state transitions.",
               color: "#06b6d4",
             },
             {
               icon: <Terminal size={18} />,
-              title: "Sandboxed Workspace",
-              desc: "All generated files live in a validated sandbox. Every file operation goes through safe path checks.",
+              title: "Session Workspace",
+              desc: "All file operations resolve against a workspace session with path traversal checks, UTF-8 safety, and CRUD endpoints.",
               color: "#34d399",
             },
             {
               icon: <Box size={18} />,
-              title: "Test-First Backend",
-              desc: "39 passing tests covering prompts, graph execution, streaming, validation, and workspace operations.",
+              title: "Validated Backend Contracts",
+              desc: "Core behavior is covered by backend tests across prompt policy/schema, graph behavior, streaming, and workspace operations.",
               color: "#fbbf24",
             },
           ].map((item) => (
@@ -359,8 +358,8 @@ export function About() {
           How It Works
         </h2>
         <p style={{ fontSize: 14, color: "rgba(226,232,240,0.55)", lineHeight: 1.8, marginBottom: 24 }}>
-          The user submits a prompt. The LangGraph workflow fires three agents in
-          sequence — each one building on the previous node's state:
+          The user submits a prompt. The LangGraph workflow runs three nodes in
+          sequence, then the coder iterates file-by-file until completion:
         </p>
 
         <div style={{ position: "relative" }}>
@@ -369,19 +368,19 @@ export function About() {
               step: "01",
               node: "Planner",
               color: "#a78bfa",
-              desc: "Decomposes the prompt into a structured plan with goals, sub-tasks, and constraints.",
+              desc: "Builds a structured project plan with app summary, feature list, and initial file targets.",
             },
             {
               step: "02",
               node: "Architect",
               color: "#06b6d4",
-              desc: "Designs the system architecture — file structure, module layout, and API contracts.",
+              desc: "Converts the plan into ordered implementation steps, one task per file path.",
             },
             {
               step: "03",
               node: "Coder",
               color: "#34d399",
-              desc: "Implements the architecture into real runnable files, streamed live to the workspace.",
+              desc: "Executes each implementation step using read_file/list_files/write_file tools until status is DONE.",
             },
           ].map((step, i) => (
             <div

@@ -9,7 +9,7 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, Header, Query
+from fastapi import Depends, FastAPI, Header, Query
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +26,7 @@ try:  # pragma: no cover - supports script execution
         prompt_schema,
     )
     from .state import Plan, TaskPlan
+    from .security_config import SecurityConfig, load_security_config
     from . import workspace as workspace_service
 except ImportError:  # pragma: no cover
     from graph import astream_workflow, get_graph_schema, run_workflow
@@ -37,9 +38,15 @@ except ImportError:  # pragma: no cover
         prompt_schema,
     )
     from state import Plan, TaskPlan
+    from security_config import SecurityConfig, load_security_config
     import workspace as workspace_service
 
 logger = logging.getLogger(__name__)
+SECURITY_CONFIG: SecurityConfig = load_security_config()
+
+
+class WorkspaceAuthRequiredError(PermissionError):
+    """Raised when workspace APIs require an API key and one is not provided."""
 
 
 class ApiErrorBody(BaseModel):
@@ -302,8 +309,23 @@ def _summarize_update(node: str, update: object) -> dict[str, Any]:
         if isinstance(total_steps, list):
             summary["total_steps"] = len(total_steps)
 
+    if isinstance(update.get("detailed_ins"), dict):
+        detailed_ins = update["detailed_ins"]
+        implementation_steps = (
+            detailed_ins.get("implementation_steps")
+            if isinstance(detailed_ins, dict)
+            else None
+        )
+        if isinstance(implementation_steps, list):
+            summary["total_steps"] = len(implementation_steps)
+
     if isinstance(update.get("implementation_steps"), list):
         summary["total_steps"] = len(update["implementation_steps"])
+
+    if isinstance(update.get("plan"), dict):
+        plan_files = update["plan"].get("files")
+        if isinstance(plan_files, list):
+            summary["planned_files"] = len(plan_files)
 
     if isinstance(update.get("file_path"), str):
         summary["file_path"] = update["file_path"]
@@ -311,7 +333,15 @@ def _summarize_update(node: str, update: object) -> dict[str, Any]:
     if "status" in summary:
         text = f"status={summary['status']}"
     elif "current_step_idx" in summary and "total_steps" in summary:
-        text = f"step {summary['current_step_idx'] + 1}/{summary['total_steps']}"
+        completed_steps = max(0, min(int(summary["current_step_idx"]), int(summary["total_steps"])))
+        active_step = min(completed_steps + 1, int(summary["total_steps"]))
+        summary["completed_steps"] = completed_steps
+        summary["active_step"] = active_step
+        text = f"file {active_step}/{summary['total_steps']} ({completed_steps} completed)"
+    elif "total_steps" in summary:
+        text = f"total files={summary['total_steps']}"
+    elif "planned_files" in summary:
+        text = f"planned files={summary['planned_files']}"
     elif "current_step_idx" in summary:
         text = f"step index now {summary['current_step_idx']}"
     elif "keys" in summary:
@@ -507,7 +537,7 @@ def _normalize_langgraph_stream_item(
         if debug_type == "task" and isinstance(node, str):
             should_emit_start = True
             start_message = "Node '{node}' is now active and thinking (iteration {iteration})."
-        elif isinstance(node, str) and node != runtime.current_active_node:
+        elif debug_type in (None, "") and isinstance(node, str) and node != runtime.current_active_node:
             # Backward-compatible fallback for generic debug payloads that carry a
             # node name but no explicit task marker.
             should_emit_start = True
@@ -676,7 +706,20 @@ def _workspace_error_response(exc: Exception) -> JSONResponse:
         return _error_response(404, "workspace_not_found", str(exc))
     if isinstance(exc, workspace_service.WorkspaceConflictError):
         return _error_response(409, "workspace_conflict", str(exc))
-    return _error_response(500, "workspace_error", str(exc))
+    message = str(exc) if SECURITY_CONFIG.expose_verbose_errors else "Workspace operation failed."
+    return _error_response(500, "workspace_error", message)
+
+
+def _require_workspace_auth(
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+) -> None:
+    if not SECURITY_CONFIG.require_workspace_auth:
+        return
+    if (x_api_key or "").strip():
+        return
+    raise WorkspaceAuthRequiredError(
+        "Workspace API authentication required. Provide a non-empty X-API-KEY header."
+    )
 
 
 app = FastAPI(
@@ -689,8 +732,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=SECURITY_CONFIG.cors_allowed_origins,
+    allow_credentials=SECURITY_CONFIG.cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -706,6 +749,15 @@ async def handle_validation_error(_, exc: RequestValidationError):  # pragma: no
     )
 
 
+@app.exception_handler(WorkspaceAuthRequiredError)
+async def handle_workspace_auth_error(_, exc: WorkspaceAuthRequiredError):  # pragma: no cover
+    return _error_response(
+        status_code=401,
+        code="workspace_unauthorized",
+        message=str(exc),
+    )
+
+
 @app.exception_handler(Exception)
 async def handle_unexpected_error(_, exc: Exception):  # pragma: no cover
     logger.exception("Unhandled API error: %s", exc)
@@ -717,13 +769,15 @@ async def handle_unexpected_error(_, exc: Exception):  # pragma: no cover
 
 
 @app.get("/health")
-def health() -> dict[str, str | int]:
+def health() -> dict[str, str | int | bool]:
     return {
         "status": "ok",
         "provider": PROVIDER_NAME,
         "default_model": DEFAULT_GROQ_MODEL,
         "max_mutable_prompt_chars": MAX_MUTABLE_PROMPT_CHARS,
         "max_editable_file_chars": workspace_service.MAX_EDITABLE_FILE_CHARS,
+        "workspace_auth_required": SECURITY_CONFIG.require_workspace_auth,
+        "app_env": SECURITY_CONFIG.app_env,
     }
 
 
@@ -745,7 +799,7 @@ def graph_schema() -> dict[str, object]:
 
 
 @app.post("/workspace/session", response_model=WorkspaceSessionResponse)
-def workspace_session_create():
+def workspace_session_create(_auth: None = Depends(_require_workspace_auth)):
     try:
         workspace_service.cleanup_expired_sessions()
         session = workspace_service.create_session()
@@ -755,7 +809,10 @@ def workspace_session_create():
 
 
 @app.post("/workspace/session/{workspace_id}/touch", response_model=WorkspaceSessionResponse)
-def workspace_session_touch(workspace_id: str):
+def workspace_session_touch(
+    workspace_id: str,
+    _auth: None = Depends(_require_workspace_auth),
+):
     try:
         workspace_service.cleanup_expired_sessions()
         session = workspace_service.touch_session(workspace_id)
@@ -765,7 +822,10 @@ def workspace_session_touch(workspace_id: str):
 
 
 @app.delete("/workspace/session/{workspace_id}")
-def workspace_session_delete(workspace_id: str):
+def workspace_session_delete(
+    workspace_id: str,
+    _auth: None = Depends(_require_workspace_auth),
+):
     try:
         workspace_service.cleanup_expired_sessions()
         workspace_service.delete_session(workspace_id)
@@ -778,6 +838,7 @@ def workspace_session_delete(workspace_id: str):
 def workspace_tree(
     workspace_id: str | None = Query(default=None),
     x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+    _auth: None = Depends(_require_workspace_auth),
 ):
     try:
         session = _resolve_workspace_session(
@@ -798,6 +859,7 @@ def workspace_tree(
 def workspace_files(
     workspace_id: str | None = Query(default=None),
     x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+    _auth: None = Depends(_require_workspace_auth),
 ):
     try:
         session = _resolve_workspace_session(
@@ -822,6 +884,7 @@ def workspace_file(
     path: str = Query(..., min_length=1),
     workspace_id: str | None = Query(default=None),
     x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+    _auth: None = Depends(_require_workspace_auth),
 ):
     try:
         session = _resolve_workspace_session(
@@ -842,6 +905,7 @@ def workspace_file(
 def workspace_file_write(
     payload: WorkspaceFileWriteRequest,
     x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+    _auth: None = Depends(_require_workspace_auth),
 ):
     try:
         session = _resolve_workspace_session(
@@ -867,6 +931,7 @@ def workspace_file_write(
 def workspace_folder_create(
     payload: WorkspaceFolderCreateRequest,
     x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+    _auth: None = Depends(_require_workspace_auth),
 ):
     try:
         session = _resolve_workspace_session(
@@ -887,6 +952,7 @@ def workspace_folder_create(
 def workspace_path_rename(
     payload: WorkspaceRenameRequest,
     x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+    _auth: None = Depends(_require_workspace_auth),
 ):
     try:
         session = _resolve_workspace_session(
@@ -914,6 +980,7 @@ def workspace_path_delete(
     recursive: bool = False,
     workspace_id: str | None = Query(default=None),
     x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+    _auth: None = Depends(_require_workspace_auth),
 ):
     try:
         session = _resolve_workspace_session(
@@ -938,6 +1005,7 @@ def workspace_path_delete(
 def workspace_download(
     workspace_id: str | None = Query(default=None),
     x_workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+    _auth: None = Depends(_require_workspace_auth),
 ):
     try:
         session = _resolve_workspace_session(
@@ -986,7 +1054,15 @@ async def run_agent_workflow(
         return _error_response(422, "invalid_request", str(exc))
     except Exception as exc:  # pragma: no cover
         logger.exception("Workflow failed run_id=%s", run_id)
-        return _error_response(500, "workflow_error", str(exc))
+        message = (
+            str(exc)
+            if SECURITY_CONFIG.expose_verbose_errors
+            else "Workflow execution failed. Check server logs with the run_id for details."
+        )
+        details = {"run_id": run_id}
+        if SECURITY_CONFIG.expose_verbose_errors:
+            details["exception_chain"] = _exception_chain(exc)
+        return _error_response(500, "workflow_error", message, details)
 
     return RunWorkflowResponse(
         status=result.get("status", "DONE"),
@@ -1161,6 +1237,18 @@ async def stream_agent_workflow(
             logger.exception("Workflow stream failed run_id=%s", run_id)
             classification = _classify_exception(exc)
             exc_chain = _exception_chain(exc)
+            run_duration_ms = int((perf_counter() - run_started_at) * 1000)
+            error_details: dict[str, Any] = {
+                "run_duration_ms": run_duration_ms,
+                "run_id": run_id,
+            }
+            raw_error: dict[str, Any] = {
+                "type": exc.__class__.__name__,
+            }
+            if SECURITY_CONFIG.expose_verbose_errors:
+                error_details["primary_error"] = exc_chain[0] if exc_chain else None
+                error_details["exception_chain"] = exc_chain
+                raw_error["exception"] = str(exc)
             if active_node_id and active_node_id in node_states:
                 node_states[active_node_id] = "error"
                 activity_scores[active_node_id] = 0.0
@@ -1175,13 +1263,9 @@ async def stream_agent_workflow(
                     "error_type": classification["error_type"],
                     "hint": classification["hint"],
                     "message": "Workflow failed during streaming.",
-                    "details": {
-                        "primary_error": exc_chain[0] if exc_chain else None,
-                        "exception_chain": exc_chain,
-                        "run_duration_ms": int((perf_counter() - run_started_at) * 1000),
-                    },
+                    "details": error_details,
                     "namespace": None,
-                    "raw": {"exception": str(exc), "type": exc.__class__.__name__},
+                    "raw": raw_error,
                 },
             )
 

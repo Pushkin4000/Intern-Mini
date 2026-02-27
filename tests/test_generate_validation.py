@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+import agent.api as api_module
 from agent.api import app
 from agent.prompts import MAX_MUTABLE_PROMPT_CHARS
 
@@ -126,6 +127,29 @@ class GenerateValidationTests(unittest.TestCase):
         self.assertEqual(response.json()["error"]["code"], "invalid_request")
         mock_build.assert_not_called()
         mock_run.assert_not_called()
+
+    def test_generate_hides_exception_details_when_verbose_errors_disabled(self) -> None:
+        payload = {
+            "user_prompt": "Build a todo app",
+            "api_key": "test-key",
+        }
+
+        with patch.object(api_module.SECURITY_CONFIG, "expose_verbose_errors", False), patch(
+            "agent.api.build_chat_model"
+        ) as mock_build, patch(
+            "agent.api.run_workflow",
+            side_effect=RuntimeError("sensitive-debug-message"),
+        ):
+            mock_build.return_value = object()
+            response = self.client.post("/generate", json=payload)
+
+        self.assertEqual(response.status_code, 500)
+        payload = response.json()
+        self.assertEqual(payload["error"]["code"], "workflow_error")
+        self.assertNotIn("sensitive-debug-message", payload["error"]["message"])
+        details = payload["error"].get("details") or {}
+        self.assertIn("run_id", details)
+        self.assertNotIn("exception_chain", details)
 
 
 if __name__ == "__main__":

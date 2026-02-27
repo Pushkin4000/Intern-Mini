@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+import agent.api as api_module
 from agent.api import app
 from agent.graph import astream_workflow
 
@@ -238,6 +239,27 @@ class StreamEndpointTests(unittest.TestCase):
         self.assertEqual(node_start_events[1]["data"]["iteration"], 2)
         self.assertEqual(len(node_end_events), 2)
 
+    def test_stream_does_not_emit_false_node_start_for_task_result(self) -> None:
+        async def fake_astream(*_args, **_kwargs):
+            yield ("debug", {"type": "task", "payload": {"name": "planner"}})
+            yield ("updates", {"planner": {"ok": True}})
+            yield ("debug", {"type": "task_result", "payload": {"name": "planner"}})
+
+        with patch("agent.api.build_chat_model", return_value=object()), patch(
+            "agent.api.astream_workflow",
+            new=fake_astream,
+        ):
+            response = self.client.post("/stream", json=self.payload)
+
+        self.assertEqual(response.status_code, 200)
+        events = _parse_sse_events(response.text)
+        node_start_events = [
+            event
+            for event in events
+            if event["event"] == "on_node_start" and event["data"]["node"] == "planner"
+        ]
+        self.assertEqual(len(node_start_events), 1)
+
     def test_stream_classifies_connection_failure(self) -> None:
         async def fake_astream(*_args, **_kwargs):
             raise RuntimeError("connection refused by upstream")
@@ -255,6 +277,31 @@ class StreamEndpointTests(unittest.TestCase):
         error_payload = events[-1]["data"]
         self.assertEqual(error_payload["error_type"], "connection_error")
         self.assertTrue(isinstance(error_payload.get("hint"), str))
+
+    def test_stream_hides_exception_chain_when_verbose_errors_disabled(self) -> None:
+        async def fake_astream(*_args, **_kwargs):
+            raise RuntimeError("sensitive-debug-message")
+            if False:
+                yield None
+
+        with patch.object(api_module.SECURITY_CONFIG, "expose_verbose_errors", False), patch(
+            "agent.api.build_chat_model",
+            return_value=object(),
+        ), patch(
+            "agent.api.astream_workflow",
+            new=fake_astream,
+        ):
+            response = self.client.post("/stream", json=self.payload)
+
+        self.assertEqual(response.status_code, 200)
+        events = _parse_sse_events(response.text)
+        error_payload = events[-1]["data"]
+        details = error_payload.get("details") or {}
+        raw = error_payload.get("raw") or {}
+        self.assertNotIn("exception_chain", details)
+        self.assertNotIn("primary_error", details)
+        self.assertNotIn("exception", raw)
+        self.assertEqual(raw.get("type"), "RuntimeError")
 
     def test_event_id_is_monotonic(self) -> None:
         async def fake_astream(*_args, **_kwargs):

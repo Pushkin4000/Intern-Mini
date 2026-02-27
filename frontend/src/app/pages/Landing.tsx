@@ -245,7 +245,7 @@ function CodeSnippet() {
           <span style={{ color: "#e2e8f0" }}>, coder_node)</span>
         </div>
         <div style={{ marginTop: 8, color: "rgba(226,232,240,0.3)" }}>
-          # Edges: planner → architect → coder
+          # Edges: planner -&gt; architect -&gt; coder, then coder loops until DONE
         </div>
         <div>
           <span style={{ color: "#e2e8f0" }}>graph.</span>
@@ -312,7 +312,7 @@ export function Landing() {
         >
           <Pill>
             <Zap size={10} fill="#a78bfa" />
-            LangGraph · FastAPI · Vite React
+            LangGraph | FastAPI | Vite React
           </Pill>
         </motion.div>
 
@@ -331,7 +331,7 @@ export function Landing() {
             marginBottom: 24,
           }}
         >
-          The{" "}
+          A{" "}
           <span
             style={{
               background: "linear-gradient(135deg, #a78bfa, #06b6d4)",
@@ -339,9 +339,9 @@ export function Landing() {
               WebkitTextFillColor: "transparent",
             }}
           >
-            Transparent
+            planner - architect - coder
           </span>{" "}
-          Agentic IDE
+          workflow you can inspect live
         </motion.h1>
 
         <motion.p
@@ -357,9 +357,9 @@ export function Landing() {
             marginBottom: 40,
           }}
         >
-          A 3-node LangGraph workflow — Planner → Architect → Coder — that
-          generates and iterates project files with fully guarded, observable
-          prompts at every step.
+          Planner builds a structured plan, Architect creates ordered
+          implementation steps, and Coder executes file-level tasks in a loop
+          until DONE with live graph, logs, and workspace updates.
         </motion.p>
 
         <motion.div
@@ -426,10 +426,10 @@ export function Landing() {
           }}
         >
           {[
-            { val: "3", label: "Agent Nodes" },
-            { val: "39", label: "Tests Passing" },
-            { val: "12+", label: "API Endpoints" },
-            { val: "100%", label: "Prompt Transparency" },
+            { val: "3", label: "Workflow Nodes" },
+            { val: "SSE", label: "Live Stream" },
+            { val: "CRUD", label: "Workspace APIs" },
+            { val: "Guarded", label: "Prompt Layers" },
           ].map((s) => (
             <div key={s.label} style={{ textAlign: "center" }}>
               <div
@@ -492,7 +492,7 @@ export function Landing() {
           <NodeCard
             label="01 · PLANNER"
             icon={<Layers size={18} />}
-            desc="Decomposes the user prompt into a structured plan. Defines goals, constraints, and the sequence of operations."
+            desc="Produces a structured Plan from the request, including summary, features, and expected files."
             color="#a78bfa"
             delay={0}
           />
@@ -509,7 +509,7 @@ export function Landing() {
           <NodeCard
             label="02 · ARCHITECT"
             icon={<Network size={18} />}
-            desc="Takes the plan and designs the system architecture — file structure, module boundaries, and API contracts."
+            desc="Translates the Plan into ordered implementation_steps, usually one concrete task per target file path."
             color="#06b6d4"
             delay={1}
           />
@@ -526,7 +526,7 @@ export function Landing() {
           <NodeCard
             label="03 · CODER"
             icon={<Code2 size={18} />}
-            desc="Implements the architecture into real, runnable project files. Writes, patches, and iterates on code."
+            desc="Executes steps with read_file, list_files, and write_file, then loops until it returns DONE."
             color="#34d399"
             delay={2}
           />
@@ -581,7 +581,7 @@ export function Landing() {
               letterSpacing: "-0.03em",
             }}
           >
-            Built for Transparency
+            Built for Real Workflow Operations
           </h2>
         </motion.div>
 
@@ -595,33 +595,33 @@ export function Landing() {
           {[
             {
               icon: <Shield size={18} />,
-              title: "Guarded Prompts",
-              desc: "Every node uses immutable rules + immutable prefix + mutable body + context. You always see exactly what the agent receives.",
+              title: "Guarded Prompt Layers",
+              desc: "Prompt composition stays explicit: immutable global rules, immutable node prefix, editable override layer, and runtime context.",
             },
             {
               icon: <Activity size={18} />,
-              title: "Real-Time Streaming",
-              desc: "SSE stream at /stream delivers node activity scores, severity levels, and state snapshots as the workflow runs.",
+              title: "Real-Time SSE Lifecycle",
+              desc: "The /stream endpoint emits normalized lifecycle events so the UI can track node states, activity, and concise execution logs.",
             },
             {
               icon: <Terminal size={18} />,
-              title: "FastAPI Backend",
-              desc: "Clean REST API with /generate, /stream, prompt schema endpoints, and full workspace CRUD with sandboxed path validation.",
+              title: "FastAPI Runtime APIs",
+              desc: "Backend routes cover schema inspection, workflow runs, streaming output, and workspace file and folder CRUD operations.",
             },
             {
               icon: <GitBranch size={18} />,
-              title: "Prompt Schema API",
-              desc: "Inspect and override any node's prompt at runtime via /api/prompts and /v1/prompts/schema — full observability.",
+              title: "Session Workspace",
+              desc: "Each run uses a session-scoped workspace with path validation, editable file limits, and ZIP export for handoff.",
             },
             {
               icon: <Download size={18} />,
-              title: "Workspace Download",
-              desc: "Zip the entire generated workspace via /workspace/download. Full CRUD on files and folders within a safe sandbox.",
+              title: "Security by Environment",
+              desc: "Secure mode can require workspace auth and production responses reduce verbose error leakage while keeping server logs detailed.",
             },
             {
               icon: <Code2 size={18} />,
-              title: "Stitching Contract",
-              desc: "Figma-ready integration layer with Zustand store, a live editor panel, and runtime graph telemetry for the frontend.",
+              title: "Live Studio Integration",
+              desc: "React + Zustand frontend wiring keeps prompts, graph state, logs, and file editing synchronized during active runs.",
             },
           ].map((f, i) => (
             <FeatureCard key={f.title} {...f} delay={i * 0.1} />
@@ -669,8 +669,8 @@ export function Landing() {
                 marginBottom: 32,
               }}
             >
-              Open the Live Studio to explore the agent IDE interface — file tree,
-              code editor, graph visualization, and real-time logs.
+              Open the Live Studio to run the workflow, inspect graph and logs,
+              edit workspace files, and download the generated ZIP output.
             </p>
             <NavLink
               to="/studio"

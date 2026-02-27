@@ -31,6 +31,11 @@ import {
   composePromptEditorValue,
   extractEditablePromptSuffix,
 } from "@/app/store/prompt-editor";
+import {
+  getRememberApiKeyPreference,
+  getStoredApiKey,
+  saveApiKey,
+} from "@/app/lib/api-key-storage";
 import { useAgentStore } from "@/app/store/useAgentStore";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -102,6 +107,19 @@ function toSeverity(value: string | undefined): "info" | "success" | "warn" | "e
   return "info";
 }
 
+function toFiniteInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.round(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return Math.round(parsed);
+    }
+  }
+  return null;
+}
+
 function formatLogTime(timestamp: string): string {
   const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) {
@@ -124,23 +142,14 @@ function formatLogDetails(details: Record<string, unknown> | null | undefined): 
     .join(" | ");
 }
 
-function readStoredApiKey(): string {
-  return (
-    localStorage.getItem("X-API-KEY") ??
-    localStorage.getItem("groq_api_key") ??
-    localStorage.getItem("api_key") ??
-    ""
-  ).trim();
-}
-
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function NodeBadge({ name }: { name: string }) {
   const colors: Record<string, { bg: string; color: string }> = {
-    planner:   { bg: "rgba(167,139,250,0.12)", color: "#a78bfa" },
-    architect: { bg: "rgba(6,182,212,0.12)",   color: "#06b6d4" },
-    coder:     { bg: "rgba(52,211,153,0.12)",   color: "#34d399" },
-    system:    { bg: "rgba(226,232,240,0.08)",  color: "rgba(226,232,240,0.4)" },
+    planner: { bg: "rgba(167,139,250,0.12)", color: "#a78bfa" },
+    architect: { bg: "rgba(6,182,212,0.12)", color: "#06b6d4" },
+    coder: { bg: "rgba(52,211,153,0.12)", color: "#34d399" },
+    system: { bg: "rgba(226,232,240,0.08)", color: "rgba(226,232,240,0.4)" },
   };
   const c = colors[name] || colors.system;
   return (
@@ -294,8 +303,8 @@ function GraphNode({
         {status === "running" && (
           <Loader2 size={16} color={color} style={{ animation: "spin 1s linear infinite" }} />
         )}
-        {status === "done"  && <CheckCircle2 size={16} color={color} />}
-        {status === "idle"  && <Clock size={16} color="rgba(226,232,240,0.2)" />}
+        {status === "done" && <CheckCircle2 size={16} color={color} />}
+        {status === "idle" && <Clock size={16} color="rgba(226,232,240,0.2)" />}
         {status === "error" && <AlertCircle size={16} color="#f87171" />}
         <span
           style={{
@@ -329,17 +338,20 @@ function GraphNode({
 function ApiKeyModal({
   onClose,
   apiKey,
+  rememberKey,
   onSave,
 }: {
   onClose: () => void;
   apiKey: string;
-  onSave: (key: string) => void;
+  rememberKey: boolean;
+  onSave: (key: string, remember: boolean) => void;
 }) {
   const [value, setValue] = useState(apiKey);
   const [showKey, setShowKey] = useState(false);
+  const [remember, setRemember] = useState(rememberKey);
 
   const handleSave = () => {
-    onSave(value.trim());
+    onSave(value.trim(), remember);
     onClose();
   };
 
@@ -432,8 +444,10 @@ function ApiKeyModal({
               Your key stays in your browser
             </p>
             <p style={{ fontSize: 11, color: "rgba(52,211,153,0.7)", margin: 0, lineHeight: 1.6 }}>
-              The key is stored only in <code style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10 }}>localStorage</code> on your device.
-              It is never sent to any server other than Groq's API directly. We do not log, store, or transmit it.
+              By default, the key is stored in{" "}
+              <code style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10 }}>sessionStorage</code>{" "}
+              and cleared when the browser session ends. Enable remember mode to persist it in{" "}
+              <code style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10 }}>localStorage</code>.
             </p>
           </div>
         </div>
@@ -507,6 +521,26 @@ function ApiKeyModal({
             {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
           </button>
         </div>
+
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 20,
+            fontSize: 11,
+            color: "rgba(226,232,240,0.45)",
+            cursor: "pointer",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={(event) => setRemember(event.target.checked)}
+            style={{ accentColor: "#7c3aed" }}
+          />
+          Remember key on this device (uses localStorage).
+        </label>
 
         {/* Get key link */}
         <p style={{ fontSize: 11, color: "rgba(226,232,240,0.3)", marginBottom: 20, lineHeight: 1.6 }}>
@@ -754,7 +788,8 @@ export function LiveStudio() {
   const [prompt, setPrompt] = useState("Build a minimal FastAPI health check endpoint with one GET route.");
   const [rightTab, setRightTab] = useState<RightPanelTab>("graph");
   const [showApiModal, setShowApiModal] = useState(false);
-  const [apiKey, setApiKey] = useState(() => readStoredApiKey());
+  const [apiKey, setApiKey] = useState(() => getStoredApiKey());
+  const [rememberApiKey, setRememberApiKey] = useState(() => getRememberApiKeyPreference());
   const [editorContent, setEditorContent] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -800,6 +835,12 @@ export function LiveStudio() {
   }, [logs]);
 
   useEffect(() => {
+    if (errorMessage?.toLowerCase().includes("workspace access requires an api key")) {
+      setShowApiModal(true);
+    }
+  }, [errorMessage]);
+
+  useEffect(() => {
     if (!isRunning) {
       return;
     }
@@ -819,17 +860,11 @@ export function LiveStudio() {
     setEditorContent(files[activeFile] ?? "");
   }, [activeFile, files]);
 
-  const handleSaveKey = (key: string) => {
+  const handleSaveKey = (key: string, remember: boolean) => {
     const trimmed = key.trim();
     setApiKey(trimmed);
-    if (trimmed) {
-      localStorage.setItem("X-API-KEY", trimmed);
-      localStorage.setItem("groq_api_key", trimmed);
-    } else {
-      localStorage.removeItem("X-API-KEY");
-      localStorage.removeItem("groq_api_key");
-      localStorage.removeItem("api_key");
-    }
+    setRememberApiKey(remember);
+    saveApiKey(trimmed, remember);
   };
 
   const handleOverrideChange = (node: NodeId, value: string) => {
@@ -838,7 +873,7 @@ export function LiveStudio() {
 
   const handleRun = () => {
     if (!prompt.trim() || isRunning) return;
-    if (!readStoredApiKey()) {
+    if (!getStoredApiKey()) {
       setShowApiModal(true);
       return;
     }
@@ -868,10 +903,10 @@ export function LiveStudio() {
   };
 
   const sevColor: Record<string, string> = {
-    info:    "rgba(226,232,240,0.5)",
+    info: "rgba(226,232,240,0.5)",
     success: "#34d399",
-    warn:    "#fbbf24",
-    error:   "#f87171",
+    warn: "#fbbf24",
+    error: "#f87171",
   };
 
   const fileNodes = useMemo(() => toFileNodes(treeNodes), [treeNodes]);
@@ -896,6 +931,63 @@ export function LiveStudio() {
     }
     return null;
   }, [activeNodeId, logs]);
+
+  const coderFileProgress = useMemo(() => {
+    let totalFiles: number | null = null;
+    let completedFiles = 0;
+
+    for (let index = 0; index < logs.length; index += 1) {
+      const log = logs[index];
+      if (!log.details) {
+        continue;
+      }
+
+      const totalSteps = toFiniteInteger(log.details.total_steps);
+      if (typeof totalSteps === "number" && totalSteps > 0) {
+        totalFiles = totalFiles === null ? totalSteps : Math.max(totalFiles, totalSteps);
+      }
+
+      if (log.node === "coder" && log.event === "on_node_end") {
+        const currentStepIdx = toFiniteInteger(log.details.current_step_idx);
+        if (typeof currentStepIdx === "number") {
+          completedFiles = Math.max(completedFiles, currentStepIdx);
+        }
+      }
+    }
+
+    if (totalFiles === null || totalFiles <= 0) {
+      return null;
+    }
+
+    const normalizedCompleted = Math.min(Math.max(completedFiles, 0), totalFiles);
+    const isCoderRunning = activeNodeId === "coder" && nodeStatuses.coder === "running";
+    const activeFile = isCoderRunning
+      ? Math.min(normalizedCompleted + 1, totalFiles)
+      : null;
+
+    return {
+      totalFiles,
+      completedFiles: normalizedCompleted,
+      activeFile,
+    };
+  }, [activeNodeId, logs, nodeStatuses.coder]);
+
+  const activeNodeSummary = useMemo(() => {
+    if (!activeNodeId) {
+      return null;
+    }
+    if (activeNodeId === "coder" && coderFileProgress) {
+      const { activeFile, completedFiles, totalFiles } = coderFileProgress;
+      if (activeFile !== null) {
+        return `working on file ${activeFile}/${totalFiles} (${completedFiles}/${totalFiles} completed)`;
+      }
+      return `${completedFiles}/${totalFiles} files completed`;
+    }
+    if (typeof activeIteration === "number") {
+      return `iteration ${activeIteration}`;
+    }
+    return null;
+  }, [activeIteration, activeNodeId, coderFileProgress]);
 
   return (
     <div style={{ height: "calc(100vh - 64px)", display: "flex", flexDirection: "column", overflow: "hidden", fontFamily: "'JetBrains Mono', monospace" }}>
@@ -1180,11 +1272,11 @@ export function LiveStudio() {
                     <Activity size={9} /> Agent Graph
                   </div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2 }}>
-                    <GraphNode label="Planner"   status={nodeStatuses.planner}   color="#a78bfa" />
-                    <div style={{ flex: 1, height: 2, background: nodeStatuses.planner   === "done" ? "linear-gradient(90deg,#a78bfa,#06b6d4)" : "rgba(255,255,255,0.06)", borderRadius: 1, transition: "background 0.5s" }} />
+                    <GraphNode label="Planner" status={nodeStatuses.planner} color="#a78bfa" />
+                    <div style={{ flex: 1, height: 2, background: nodeStatuses.planner === "done" ? "linear-gradient(90deg,#a78bfa,#06b6d4)" : "rgba(255,255,255,0.06)", borderRadius: 1, transition: "background 0.5s" }} />
                     <GraphNode label="Architect" status={nodeStatuses.architect} color="#06b6d4" />
                     <div style={{ flex: 1, height: 2, background: nodeStatuses.architect === "done" ? "linear-gradient(90deg,#06b6d4,#34d399)" : "rgba(255,255,255,0.06)", borderRadius: 1, transition: "background 0.5s" }} />
-                    <GraphNode label="Coder"     status={nodeStatuses.coder}     color="#34d399" />
+                    <GraphNode label="Coder" status={nodeStatuses.coder} color="#34d399" />
                   </div>
                   <AnimatePresence>
                     {hasRun && (
@@ -1196,9 +1288,25 @@ export function LiveStudio() {
                       </motion.div>
                     )}
                   </AnimatePresence>
+                  {coderFileProgress && (
+                    <div
+                      style={{
+                        marginTop: 8,
+                        fontSize: 10,
+                        color: "rgba(226,232,240,0.5)",
+                        textAlign: "center",
+                      }}
+                    >
+                      Coder progress: {coderFileProgress.completedFiles}/{coderFileProgress.totalFiles} files
+                      {coderFileProgress.activeFile !== null
+                        ? ` - working on ${coderFileProgress.activeFile}/${coderFileProgress.totalFiles}`
+                        : ""}
+                    </div>
+                  )}
                   {activeNodeId && (
                     <div style={{ marginTop: 8, fontSize: 10, color: "rgba(226,232,240,0.45)", textAlign: "center" }}>
-                      Active node: {activeNodeId}{typeof activeIteration === "number" ? ` (iteration ${activeIteration})` : ""}
+                      Active node: {activeNodeId}
+                      {activeNodeSummary ? ` (${activeNodeSummary})` : ""}
                     </div>
                   )}
                 </div>
@@ -1316,6 +1424,7 @@ export function LiveStudio() {
           <ApiKeyModal
             onClose={() => setShowApiModal(false)}
             apiKey={apiKey}
+            rememberKey={rememberApiKey}
             onSave={handleSaveKey}
           />
         )}
@@ -1328,5 +1437,3 @@ export function LiveStudio() {
     </div>
   );
 }
-
-
