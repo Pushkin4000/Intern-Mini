@@ -11,7 +11,6 @@ import {
   ChevronDown,
   Terminal,
   Activity,
-  Zap,
   CheckCircle2,
   Clock,
   Loader2,
@@ -598,6 +597,122 @@ function ApiKeyModal({
 
 // ─── Prompt Override Panel ─────────────────────────────────────────────────────
 
+function WorkspaceRolloverModal({
+  workspaceId,
+  fileCount,
+  canContinueWorkspace,
+  onClose,
+  onContinue,
+  onStartFresh,
+}: {
+  workspaceId: string | null;
+  fileCount: number;
+  canContinueWorkspace: boolean;
+  onClose: () => void;
+  onContinue: () => void;
+  onStartFresh: () => void;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 100,
+        background: "rgba(0,0,0,0.65)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+      }}
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 8 }}
+        transition={{ duration: 0.2 }}
+        onClick={(event) => event.stopPropagation()}
+        style={{
+          background: "#0f0f1a",
+          border: "1px solid rgba(124,58,237,0.25)",
+          borderRadius: 14,
+          padding: 22,
+          width: "100%",
+          maxWidth: 460,
+          boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+        }}
+      >
+        <h3 style={{ margin: "0 0 8px", fontSize: 15, color: "#f1f5f9", letterSpacing: "-0.02em", fontWeight: 700 }}>
+          Start New Run
+        </h3>
+        <p style={{ margin: 0, fontSize: 12, color: "rgba(226,232,240,0.45)", lineHeight: 1.65 }}>
+          Choose whether to continue in the current workspace or start in a fresh workspace.
+        </p>
+        <div
+          style={{
+            marginTop: 12,
+            padding: "10px 12px",
+            borderRadius: 8,
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            fontSize: 11,
+            color: "rgba(226,232,240,0.5)",
+            lineHeight: 1.6,
+          }}
+        >
+          <div>current workspace: {workspaceId ?? "not initialized yet"}</div>
+          <div>files currently visible: {fileCount}</div>
+        </div>
+
+        {!canContinueWorkspace && (
+          <div style={{ marginTop: 10, fontSize: 11, color: "#fbbf24", lineHeight: 1.6 }}>
+            Continue mode is unavailable until a workspace session exists.
+          </div>
+        )}
+
+        <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+          <button
+            onClick={onContinue}
+            disabled={!canContinueWorkspace}
+            style={{
+              flex: 1,
+              padding: "9px 10px",
+              borderRadius: 7,
+              border: "1px solid rgba(255,255,255,0.1)",
+              background: "rgba(255,255,255,0.04)",
+              color: canContinueWorkspace ? "rgba(226,232,240,0.75)" : "rgba(226,232,240,0.35)",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: canContinueWorkspace ? "pointer" : "not-allowed",
+            }}
+          >
+            Continue Current Workspace
+          </button>
+          <button
+            onClick={onStartFresh}
+            style={{
+              flex: 1,
+              padding: "9px 10px",
+              borderRadius: 7,
+              border: "1px solid rgba(52,211,153,0.28)",
+              background: "rgba(52,211,153,0.12)",
+              color: "#34d399",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            Start Fresh Workspace
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 function PromptOverridePanel({
   promptSchema,
   immutableRules,
@@ -788,12 +903,14 @@ export function LiveStudio() {
   const [prompt, setPrompt] = useState("Build a minimal FastAPI health check endpoint with one GET route.");
   const [rightTab, setRightTab] = useState<RightPanelTab>("graph");
   const [showApiModal, setShowApiModal] = useState(false);
+  const [showWorkspaceRolloverModal, setShowWorkspaceRolloverModal] = useState(false);
   const [apiKey, setApiKey] = useState(() => getStoredApiKey());
   const [rememberApiKey, setRememberApiKey] = useState(() => getRememberApiKeyPreference());
   const [editorContent, setEditorContent] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
-  const logsEndRef = useRef<HTMLDivElement>(null);
+  const logsContainerRef = useRef<HTMLDivElement>(null);
+  const shouldStickToBottomRef = useRef(true);
   const workspaceId = useAgentStore((state) => state.workspaceId);
   const workspaceExpiresAt = useAgentStore((state) => state.workspaceExpiresAt);
   const files = useAgentStore((state) => state.files);
@@ -819,9 +936,12 @@ export function LiveStudio() {
   const readFile = useAgentStore((state) => state.readFile);
   const updateFileContent = useAgentStore((state) => state.updateFileContent);
   const startAgentRun = useAgentStore((state) => state.startAgentRun);
+  const resetRunVisualization = useAgentStore((state) => state.resetRunVisualization);
   const downloadWorkspaceZip = useAgentStore((state) => state.downloadWorkspaceZip);
   const setActiveFilePath = useAgentStore((state) => state.setActiveFilePath);
   const setPromptOverride = useAgentStore((state) => state.setPromptOverride);
+  const lastSubmittedPromptRef = useRef(prompt.trim());
+  const hasResetForPromptDraftRef = useRef(false);
 
   useEffect(() => {
     void (async () => {
@@ -831,7 +951,11 @@ export function LiveStudio() {
   }, [fetchFiles, fetchGraphSchema, fetchPromptSchema, fetchTree, initWorkspaceSession]);
 
   useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const container = logsContainerRef.current;
+    if (!container || !shouldStickToBottomRef.current) {
+      return;
+    }
+    container.scrollTop = container.scrollHeight;
   }, [logs]);
 
   useEffect(() => {
@@ -871,13 +995,44 @@ export function LiveStudio() {
     setPromptOverride(node, value.slice(0, maxMutablePromptChars));
   };
 
+  const handlePromptChange = (nextPrompt: string) => {
+    setPrompt(nextPrompt);
+    if (isRunning) {
+      return;
+    }
+
+    const normalizedPrompt = nextPrompt.trim();
+    const lastSubmittedPrompt = lastSubmittedPromptRef.current;
+    if (normalizedPrompt === lastSubmittedPrompt) {
+      hasResetForPromptDraftRef.current = false;
+      return;
+    }
+
+    if (!hasResetForPromptDraftRef.current) {
+      resetRunVisualization(true);
+      hasResetForPromptDraftRef.current = true;
+    }
+  };
+
+  const runWithWorkspaceMode = (workspaceMode: "fresh" | "continue") => {
+    if (!prompt.trim() || isRunning) return;
+    lastSubmittedPromptRef.current = prompt.trim();
+    hasResetForPromptDraftRef.current = false;
+    setShowWorkspaceRolloverModal(false);
+    void startAgentRun({ userPrompt: prompt, workspaceMode });
+  };
+
   const handleRun = () => {
     if (!prompt.trim() || isRunning) return;
     if (!getStoredApiKey()) {
       setShowApiModal(true);
       return;
     }
-    void startAgentRun({ userPrompt: prompt });
+    if (!hasWorkspaceArtifacts) {
+      runWithWorkspaceMode("continue");
+      return;
+    }
+    setShowWorkspaceRolloverModal(true);
   };
 
   const handleRefresh = () => {
@@ -902,6 +1057,16 @@ export function LiveStudio() {
     void resetWorkspaceSession().then(() => Promise.all([fetchFiles(), fetchTree()]));
   };
 
+  const handleLogsScroll = () => {
+    const container = logsContainerRef.current;
+    if (!container) {
+      return;
+    }
+    const distanceFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    shouldStickToBottomRef.current = distanceFromBottom <= 48;
+  };
+
   const sevColor: Record<string, string> = {
     info: "rgba(226,232,240,0.5)",
     success: "#34d399",
@@ -912,6 +1077,9 @@ export function LiveStudio() {
   const fileNodes = useMemo(() => toFileNodes(treeNodes), [treeNodes]);
   const hasRun = logs.some((log) => log.event === "run_complete");
   const fileCount = useMemo(() => countTreeFiles(treeNodes), [treeNodes]);
+  const hasWorkspaceArtifacts =
+    Boolean(workspaceId) && (fileCount > 0 || Object.keys(files).length > 0);
+  const canContinueWorkspace = Boolean(workspaceId);
   const isDirty = activeFile ? editorContent !== (files[activeFile] ?? "") : false;
   const nodeStatuses = {
     planner: toNodeStatus(nodeStatusById.planner),
@@ -1005,24 +1173,16 @@ export function LiveStudio() {
           flexShrink: 0,
         }}
       >
-        {/* Logo tag */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, marginRight: 4 }}>
-          <div style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(135deg,#7c3aed,#06b6d4)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <Zap size={12} color="white" fill="white" />
-          </div>
-          <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(226,232,240,0.6)" }}>Live Studio</span>
-        </div>
-
         {/* Prompt input */}
         <textarea
           id="agent-user-prompt"
           value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
+          onChange={(e) => handlePromptChange(e.target.value)}
           rows={1}
           placeholder="Describe what to build (keep it simple for free Groq tier)..."
           style={{
-            flex: 1,
-            minWidth: 200,
+            flex: "1 1 520px",
+            minWidth: 320,
             padding: "7px 12px",
             borderRadius: 6,
             background: "rgba(255,255,255,0.04)",
@@ -1323,7 +1483,7 @@ export function LiveStudio() {
                       </span>
                     )}
                   </div>
-                  <div style={{ flex: 1, overflowY: "auto", padding: "6px 8px" }}>
+                  <div ref={logsContainerRef} onScroll={handleLogsScroll} style={{ flex: 1, overflowY: "auto", padding: "6px 8px" }}>
                     {logs.length === 0 && (
                       <div style={{ padding: "20px", textAlign: "center", fontSize: 11, color: "rgba(226,232,240,0.15)" }}>
                         Run the agent to see live logs
@@ -1389,7 +1549,6 @@ export function LiveStudio() {
                         {errorMessage}
                       </div>
                     )}
-                    <div ref={logsEndRef} />
                   </div>
                 </div>
               </motion.div>
@@ -1419,6 +1578,19 @@ export function LiveStudio() {
       </div>
 
       {/* API Key modal */}
+      <AnimatePresence>
+        {showWorkspaceRolloverModal && (
+          <WorkspaceRolloverModal
+            workspaceId={workspaceId}
+            fileCount={fileCount}
+            canContinueWorkspace={canContinueWorkspace}
+            onClose={() => setShowWorkspaceRolloverModal(false)}
+            onContinue={() => runWithWorkspaceMode("continue")}
+            onStartFresh={() => runWithWorkspaceMode("fresh")}
+          />
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {showApiModal && (
           <ApiKeyModal

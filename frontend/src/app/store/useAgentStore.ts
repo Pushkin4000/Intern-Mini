@@ -52,6 +52,7 @@ export interface AgentLogEvent {
 
 export interface StartAgentRunInput {
   userPrompt: string;
+  workspaceMode: "fresh" | "continue";
   model?: string;
   recursionLimit?: number;
   mutablePrompt?: string | null;
@@ -87,6 +88,7 @@ interface AgentStoreState {
   createFolder: (path: string) => Promise<void>;
   renamePath: (fromPath: string, toPath: string, overwrite?: boolean) => Promise<void>;
   deletePath: (path: string, recursive?: boolean) => Promise<void>;
+  resetRunVisualization: (clearLogs?: boolean) => void;
   startAgentRun: (input: StartAgentRunInput) => Promise<void>;
   syncSseEvent: (eventName: string, data: Record<string, unknown>) => void;
   downloadWorkspaceZip: () => Promise<void>;
@@ -96,6 +98,9 @@ interface AgentStoreState {
 
 const NODE_IDS: NodeId[] = ["planner", "architect", "coder"];
 const WORKFLOW_NODE_ID_SET = new Set<string>(NODE_IDS);
+let activeRunAbortController: AbortController | null = null;
+let activeRunAbortReason: "session_reset" | null = null;
+let activeRunToken = 0;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -176,6 +181,13 @@ function toErrorMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  const message = toErrorMessage(error).toLowerCase();
+  const objectError = toObjectOrNull(error);
+  const name = typeof objectError?.name === "string" ? objectError.name.toLowerCase() : "";
+  return name === "aborterror" || message.includes("aborted") || message.includes("abort");
 }
 
 function normalizeErrorMessage(message: string): string {
@@ -467,6 +479,29 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   },
   resetWorkspaceSession: async () => {
     try {
+      if (get().isGenerating && activeRunAbortController) {
+        activeRunAbortReason = "session_reset";
+        activeRunAbortController.abort();
+        get().resetRunVisualization(false);
+        set((state) => ({
+          isGenerating: false,
+          logs: [
+            ...state.logs,
+            {
+              id: `${Date.now()}-${state.logs.length + 1}`,
+              event: "system",
+              timestamp: nowIso(),
+              node: null,
+              state: null,
+              activity_score: 0,
+              severity: "info",
+              message: "Generation stopped by session reset.",
+              raw: null,
+            },
+          ],
+        }));
+      }
+
       const previousWorkspaceId = get().workspaceId;
       if (previousWorkspaceId) {
         await deleteWorkspaceSession(previousWorkspaceId);
@@ -481,7 +516,6 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         treeNodes: [],
         activeFilePath: null,
         skippedBinary: [],
-        logs: [],
         errorMessage: null,
       });
     } catch (error) {
@@ -691,6 +725,23 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       pushStoreError(set, `Failed to delete '${path}': ${String(error)}`);
     }
   },
+  resetRunVisualization: (clearLogs = true) => {
+    set((state) => ({
+      activeNodeId: null,
+      nodeStatusById: {
+        planner: "idle",
+        architect: "idle",
+        coder: "idle",
+      },
+      activityByNodeId: {
+        planner: 0,
+        architect: 0,
+        coder: 0,
+      },
+      errorMessage: null,
+      ...(clearLogs ? { logs: [] } : { logs: state.logs }),
+    }));
+  },
   startAgentRun: async (input: StartAgentRunInput) => {
     const userPrompt = input.userPrompt.trim();
     if (!userPrompt) {
@@ -703,44 +754,59 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       pushStoreError(set, "Missing API key. Add an API key in session storage or enable remember-key mode.");
       return;
     }
+    const runToken = ++activeRunToken;
+    const abortController = new AbortController();
+    activeRunAbortController = abortController;
+    activeRunAbortReason = null;
 
-    if (!get().workspaceId) {
-      await get().initWorkspaceSession();
-      if (!get().workspaceId) {
-        pushStoreError(set, "Workspace session is not available.");
-        return;
-      }
-    }
-    const workspaceId = get().workspaceId;
-
-    const requestPayload: RunAgentRequest = {
-      user_prompt: userPrompt,
-      model: input.model,
-      recursion_limit: input.recursionLimit,
-      mutable_prompt: input.mutablePrompt ?? null,
-      prompt_overrides: buildPromptOverrides(get().promptOverrides),
-      workspace_id: workspaceId,
-      api_key: localApiKey
-    };
-
+    get().resetRunVisualization(true);
     set({
       isGenerating: true,
-      logs: [],
-      activeNodeId: null,
-      nodeStatusById: {
-        planner: "idle",
-        architect: "idle",
-        coder: "idle"
-      },
-      activityByNodeId: {
-        planner: 0,
-        architect: 0,
-        coder: 0
-      },
+      ...(input.workspaceMode === "fresh"
+        ? {
+            files: {},
+            treeNodes: [],
+            activeFilePath: null,
+            skippedBinary: [],
+          }
+        : {}),
       errorMessage: null
     });
 
     try {
+      let workspaceId: string | null = null;
+
+      if (input.workspaceMode === "fresh") {
+        const createdWorkspace = await createWorkspaceSession();
+        workspaceId = createdWorkspace.workspace_id;
+        setWorkspaceId(workspaceId);
+        set({
+          workspaceId: createdWorkspace.workspace_id,
+          workspaceExpiresAt: createdWorkspace.expires_at,
+          errorMessage: null,
+        });
+      } else {
+        workspaceId = get().workspaceId ?? getWorkspaceId();
+        if (!workspaceId) {
+          await get().initWorkspaceSession();
+          workspaceId = get().workspaceId;
+        }
+      }
+
+      if (!workspaceId) {
+        throw new Error("Workspace session is not available.");
+      }
+
+      const requestPayload: RunAgentRequest = {
+        user_prompt: userPrompt,
+        model: input.model,
+        recursion_limit: input.recursionLimit,
+        mutable_prompt: input.mutablePrompt ?? null,
+        prompt_overrides: buildPromptOverrides(get().promptOverrides),
+        workspace_id: workspaceId,
+        api_key: localApiKey
+      };
+
       ensureApiBaseUrlConfigured();
 
       const response = await fetch(`${API_BASE_URL}/stream`, {
@@ -750,6 +816,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
           "X-API-KEY": localApiKey,
           ...(workspaceId ? { "X-Workspace-ID": workspaceId } : {}),
         },
+        signal: abortController.signal,
         body: JSON.stringify(requestPayload)
       });
 
@@ -777,11 +844,17 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       }
 
       await consumeSseStream(response, (event) => {
+        if (runToken !== activeRunToken) {
+          return;
+        }
         get().syncSseEvent(event.event, event.data);
       });
 
       await Promise.all([get().fetchFiles(), get().fetchTree()]);
     } catch (error) {
+      if (runToken === activeRunToken && isAbortLikeError(error) && activeRunAbortReason === "session_reset") {
+        return;
+      }
       const classified = classifyRunError(error);
       get().syncSseEvent("error", {
         event_id: Date.now(),
@@ -800,7 +873,11 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
         raw: { source: "startAgentRun", error: classified.rawMessage }
       });
     } finally {
-      set({ isGenerating: false });
+      if (runToken === activeRunToken) {
+        activeRunAbortController = null;
+        activeRunAbortReason = null;
+        set({ isGenerating: false });
+      }
     }
   },
   syncSseEvent: (eventName: string, data: Record<string, unknown>) => {
